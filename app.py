@@ -14,7 +14,7 @@ if 'athletes_db' not in st.session_state:
         "Матчі": [12, 15, 8, 20],
         "Очки": [5, 45, 0, 80],
         "Швидкість": [28.5, 22.0, 32.1, 25.0],
-        "Витривалість": [85, 70, 95, 60],
+        "Витривалість": [85, 70, 95, 40],
         "Сила": [75, 85, 60, 70]
     })
 
@@ -26,9 +26,16 @@ def calculate_per(row):
 def main():
     with st.sidebar:
         st.title("🏆 OmniSport Pro")
-        st.caption("Performance Analytics v3.1 (Stable)")
+        st.caption("Performance Analytics v4.0 (Ultimate)")
         st.divider()
-        menu = ["🏠 Дашборд", "👥 База гравців", "⚔️ H2H Батл (Скаутинг)", "⚛️ Лабораторія Фізики", "💾 Експорт Даних"]
+        menu = [
+            "🏠 Дашборд", 
+            "👥 База гравців", 
+            "⚔️ H2H Батл (Скаутинг)", 
+            "🗺️ Тактика та Теплова карта", # НОВИЙ РОЗДІЛ
+            "⚛️ Лабораторія Фізики", 
+            "💾 Експорт Даних"
+        ]
         choice = st.radio("Навігація", menu)
         st.divider()
         st.info(f"Активних гравців: **{len(st.session_state.athletes_db)}**")
@@ -39,6 +46,8 @@ def main():
         render_crm()
     elif choice == "⚔️ H2H Батл (Скаутинг)":
         render_scouting()
+    elif choice == "🗺️ Тактика та Теплова карта":
+        render_tactics()
     elif choice == "⚛️ Лабораторія Фізики":
         render_physics()
     elif choice == "💾 Експорт Даних":
@@ -89,12 +98,10 @@ def render_crm():
     st.dataframe(st.session_state.athletes_db, use_container_width=True)
 
 # ==========================================
-# 3. H2H СКАУТИНГ (MATPLOTLIB RADAR)
+# 3. H2H СКАУТИНГ
 # ==========================================
 def render_scouting():
     st.title("⚔️ Head-to-Head: Порівняння гравців")
-    st.markdown("Оберіть двох гравців для прямого порівняння характеристик.")
-    
     df = st.session_state.athletes_db
     
     c1, c2 = st.columns(2)
@@ -108,42 +115,29 @@ def render_scouting():
     p2_data = df[df["Ім'я"] == p2_name].iloc[0]
 
     col_radar, col_text = st.columns([2, 1])
-    
     with col_radar:
-        # Налаштування Радарної діаграми через Matplotlib
         categories = ['Витривалість', 'Сила', 'Швидкість', 'Очки', 'Матчі']
         N = len(categories)
-        
-        # Обчислення кутів для осей
         angles = [n / float(N) * 2 * np.pi for n in range(N)]
-        angles += angles[:1] # Замикаємо коло
+        angles += angles[:1]
         
         def get_radar_values(player):
-            vals = [
-                player['Витривалість'], 
-                player['Сила'], 
-                min(int((player['Швидкість'] / 40) * 100), 100),
-                min(player['Очки'] * 5, 100),
-                min(player['Матчі'] * 5, 100)
-            ]
-            vals += vals[:1] # Замикаємо коло
+            vals = [player['Витривалість'], player['Сила'], min(int((player['Швидкість'] / 40) * 100), 100), min(player['Очки'] * 5, 100), min(player['Матчі'] * 5, 100)]
+            vals += vals[:1]
             return vals
 
         fig, ax = plt.subplots(figsize=(6, 6), subplot_kw=dict(polar=True))
         ax.set_theta_offset(np.pi / 2)
         ax.set_theta_direction(-1)
-        
         plt.xticks(angles[:-1], categories, size=10)
         ax.set_rlabel_position(0)
         plt.yticks([20, 40, 60, 80], ["20", "40", "60", "80"], color="grey", size=8)
         plt.ylim(0, 100)
 
-        # Графік Гравця 1
         val1 = get_radar_values(p1_data)
         ax.plot(angles, val1, linewidth=2, linestyle='solid', label=p1_name, color='#FF5252')
         ax.fill(angles, val1, '#FF5252', alpha=0.25)
 
-        # Графік Гравця 2 (якщо обрано іншого)
         if p1_name != p2_name:
             val2 = get_radar_values(p2_data)
             ax.plot(angles, val2, linewidth=2, linestyle='solid', label=p2_name, color='#448AFF')
@@ -153,26 +147,104 @@ def render_scouting():
         st.pyplot(fig)
         
     with col_text:
-        st.subheader("🤖 AI-Аналітик")
-        st.markdown(f"**Висновки по: {p1_name}**")
-        if p1_data['Витривалість'] < 65:
-            st.warning("⚠️ Низька витривалість. Рекомендовано інтервальні тренування.")
-        elif p1_data['Сила'] < 65:
-            st.warning("⚠️ Нестача фізичної сили. Додати силові тренування.")
-        else:
-            st.success("✅ Гравець у чудовій фізичній формі!")
-            
+        st.subheader("📈 Швидкий висновок")
+        st.info(f"**{p1_name}**: Сильна сторона — " + ("Швидкість" if p1_data['Швидкість'] > 25 else "Витривалість"))
         if p1_name != p2_name:
-            st.markdown(f"**Висновки по: {p2_name}**")
-            if p2_data['Витривалість'] < 65:
-                st.warning("⚠️ Низька витривалість. Рекомендовано інтервальні тренування.")
-            elif p2_data['Сила'] < 65:
-                st.warning("⚠️ Нестача фізичної сили. Додати силові тренування.")
-            else:
-                st.success("✅ Гравець у чудовій фізичній формі!")
+            st.info(f"**{p2_name}**: Сильна сторона — " + ("Швидкість" if p2_data['Швидкість'] > 25 else "Витривалість"))
 
 # ==========================================
-# 4. ЛАБОРАТОРІЯ ФІЗИКИ (MATPLOTLIB)
+# 4. ТАКТИКА ТА ТЕПЛОВА КАРТА (НОВА ФІЧА!)
+# ==========================================
+def render_tactics():
+    st.title("🗺️ Тактика та AI-Тренер")
+    st.markdown("Аналіз пересувань гравця на полі та автоматична генерація тренувального плану.")
+    
+    df = st.session_state.athletes_db
+    selected_player = st.selectbox("Оберіть гравця для тактичного розбору:", df["Ім'я"])
+    player_data = df[df["Ім'я"] == selected_player].iloc[0]
+    
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.subheader("🔥 Теплова карта активності (Heatmap)")
+        
+        # Малюємо спортивне поле
+        fig, ax = plt.subplots(figsize=(8, 5))
+        ax.set_facecolor('#2E7D32') # Зелений колір газону
+        
+        # Контури поля
+        ax.plot([0, 0, 100, 100, 0], [0, 60, 60, 0, 0], color='white', linewidth=2)
+        ax.plot([50, 50], [0, 60], color='white', linewidth=2) # Центральна лінія
+        ax.add_patch(plt.Circle((50, 30), 10, color="white", fill=False, linewidth=2)) # Центральне коло
+        
+        # Генерація даних для теплової карти (симуляція на основі характеристик)
+        # Якщо гравець швидкий, радіус розкиду більший
+        spread = 15 if player_data['Швидкість'] > 25 else 8
+        x = np.random.normal(50, spread, 500)
+        y = np.random.normal(30, spread + 5, 500)
+        
+        # Обмежуємо точки межами поля
+        x = np.clip(x, 2, 98)
+        y = np.clip(y, 2, 58)
+        
+        # Створення самої теплової карти
+        hb = ax.hexbin(x, y, gridsize=20, cmap='YlOrRd', alpha=0.7, mincnt=1)
+        
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.set_title(f"Зони найбільшої присутності: {selected_player}", color="white", pad=15)
+        
+        # Темний фон для всієї картинки, щоб виглядало стильно
+        fig.patch.set_facecolor('#1E1E1E')
+        st.pyplot(fig)
+        
+    with col2:
+        st.subheader("🏋️ План від AI-Тренера")
+        
+        # Проста логіка генерації плану тренувань
+        weakness = "None"
+        if player_data['Витривалість'] < 60:
+            weakness = "Витривалість"
+        elif player_data['Сила'] < 60:
+            weakness = "Сила"
+        elif player_data['Швидкість'] < 20:
+            weakness = "Швидкість"
+            
+        if weakness == "Витривалість":
+            st.error("⚠️ Виявлено критичну зону: Низька витривалість.")
+            st.markdown("""
+            **План на тиждень:**
+            * **Пн:** Крос 5 км (легкий темп)
+            * **Ср:** Інтервальний біг (4х400м)
+            * **Пт:** Плавання (45 хв)
+            * **Нд:** Відпочинок або розтяжка
+            """)
+        elif weakness == "Сила":
+            st.warning("⚠️ Виявлено критичну зону: Нестача фізичної сили.")
+            st.markdown("""
+            **План на тиждень:**
+            * **Вт:** Тренажерний зал (Присідання, станова)
+            * **Чт:** Пліометрика (стрибки на тумбу)
+            * **Сб:** Робота з власною вагою (TRX)
+            """)
+        elif weakness == "Швидкість":
+            st.info("⚠️ Виявлено критичну зону: Брак вибухової швидкості.")
+            st.markdown("""
+            **План на тиждень:**
+            * **Пн:** Спринти 10х30 метрів
+            * **Ср:** Вправи на координаційній драбині
+            * **Пт:** Човниковий біг
+            """)
+        else:
+            st.success("✅ Гравець має збалансовані показники.")
+            st.markdown("""
+            **План на тиждень:**
+            * Підтримуючі командні тренування.
+            * Фокус на тактиці (перегляд відеозаписів ігор).
+            """)
+
+# ==========================================
+# 5. ЛАБОРАТОРІЯ ФІЗИКИ
 # ==========================================
 def render_physics():
     st.title("⚛️ Інтерактивна Біомеханіка")
@@ -193,7 +265,6 @@ def render_physics():
         x = v0 * np.cos(angle_rad) * t
         y = h0 + x * np.tan(angle_rad) - (g * x**2) / (2 * v0**2 * np.cos(angle_rad)**2)
         
-        # Надійний графік через Matplotlib
         fig, ax = plt.subplots(figsize=(8, 4))
         ax.plot(x, y, color="#00BCD4", linewidth=3)
         ax.fill_between(x, y, 0, color='#00BCD4', alpha=0.15)
@@ -203,11 +274,10 @@ def render_physics():
         ax.set_xlabel("Дистанція (метри)")
         ax.set_ylabel("Висота (метри)")
         ax.grid(True, linestyle=':', alpha=0.7)
-        
         st.pyplot(fig)
 
 # ==========================================
-# 5. ДАНІ
+# 6. ДАНІ
 # ==========================================
 def render_io():
     st.title("💾 Експорт Даних")
