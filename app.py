@@ -2,6 +2,8 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import time
+import random
 
 # Налаштування сторінки
 st.set_page_config(page_title="OmniSport Pro", layout="wide", initial_sidebar_state="expanded")
@@ -24,16 +26,20 @@ def calculate_per(row):
     return round((base + bonus) / 3, 1)
 
 def main():
+    # Оновлюємо PER при кожному перезавантаженні для актуальності
+    st.session_state.athletes_db['PER (Рейтинг)'] = st.session_state.athletes_db.apply(calculate_per, axis=1)
+
     with st.sidebar:
         st.title("🏆 OmniSport Pro")
-        st.caption("Performance Analytics v4.0 (Ultimate)")
+        st.caption("Performance Analytics v5.0")
         st.divider()
         menu = [
             "🏠 Дашборд", 
             "👥 База гравців", 
             "⚔️ H2H Батл (Скаутинг)", 
-            "🗺️ Тактика та Теплова карта", # НОВИЙ РОЗДІЛ
-            "⚛️ Лабораторія Фізики", 
+            "🗺️ Тактика та Теплова карта", 
+            "⚛️ Лабораторія Фізики",
+            "🎲 AI-Симулятор Матчів",
             "💾 Експорт Даних"
         ]
         choice = st.radio("Навігація", menu)
@@ -50,6 +56,8 @@ def main():
         render_tactics()
     elif choice == "⚛️ Лабораторія Фізики":
         render_physics()
+    elif choice == "🎲 AI-Симулятор Матчів":
+        render_simulator()
     elif choice == "💾 Експорт Даних":
         render_io()
 
@@ -59,7 +67,6 @@ def main():
 def render_dashboard():
     st.title("🏠 Аналітична панель")
     df = st.session_state.athletes_db
-    df['PER (Рейтинг)'] = df.apply(calculate_per, axis=1)
     
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Всього спортсменів", len(df))
@@ -93,6 +100,7 @@ def render_crm():
                 new_row = pd.DataFrame({"Ім'я": [name], "Вид спорту": [sport], "Матчі": [matches], 
                                       "Очки": [score], "Швидкість": [speed], "Витривалість": [stamina], "Сила": [power]})
                 st.session_state.athletes_db = pd.concat([st.session_state.athletes_db, new_row], ignore_index=True)
+                st.session_state.athletes_db['PER (Рейтинг)'] = st.session_state.athletes_db.apply(calculate_per, axis=1)
                 st.success(f"Спортсмена {name} успішно додано!")
 
     st.dataframe(st.session_state.athletes_db, use_container_width=True)
@@ -106,10 +114,10 @@ def render_scouting():
     
     c1, c2 = st.columns(2)
     with c1:
-        p1_name = st.selectbox("🔴 Гравець 1", df["Ім'я"])
+        p1_name = st.selectbox("🔴 Гравець 1", df["Ім'я"], key="scout_p1")
     with c2:
         default_index = 1 if len(df) > 1 else 0
-        p2_name = st.selectbox("🔵 Гравець 2", df["Ім'я"], index=default_index)
+        p2_name = st.selectbox("🔵 Гравець 2", df["Ім'я"], index=default_index, key="scout_p2")
 
     p1_data = df[df["Ім'я"] == p1_name].iloc[0]
     p2_data = df[df["Ім'я"] == p2_name].iloc[0]
@@ -134,14 +142,12 @@ def render_scouting():
         plt.yticks([20, 40, 60, 80], ["20", "40", "60", "80"], color="grey", size=8)
         plt.ylim(0, 100)
 
-        val1 = get_radar_values(p1_data)
-        ax.plot(angles, val1, linewidth=2, linestyle='solid', label=p1_name, color='#FF5252')
-        ax.fill(angles, val1, '#FF5252', alpha=0.25)
+        ax.plot(angles, get_radar_values(p1_data), linewidth=2, linestyle='solid', label=p1_name, color='#FF5252')
+        ax.fill(angles, get_radar_values(p1_data), '#FF5252', alpha=0.25)
 
         if p1_name != p2_name:
-            val2 = get_radar_values(p2_data)
-            ax.plot(angles, val2, linewidth=2, linestyle='solid', label=p2_name, color='#448AFF')
-            ax.fill(angles, val2, '#448AFF', alpha=0.25)
+            ax.plot(angles, get_radar_values(p2_data), linewidth=2, linestyle='solid', label=p2_name, color='#448AFF')
+            ax.fill(angles, get_radar_values(p2_data), '#448AFF', alpha=0.25)
 
         plt.legend(loc='upper right', bbox_to_anchor=(1.3, 1.1))
         st.pyplot(fig)
@@ -153,108 +159,78 @@ def render_scouting():
             st.info(f"**{p2_name}**: Сильна сторона — " + ("Швидкість" if p2_data['Швидкість'] > 25 else "Витривалість"))
 
 # ==========================================
-# 4. ТАКТИКА ТА ТЕПЛОВА КАРТА (НОВА ФІЧА!)
+# 4. ТАКТИКА ТА ТЕПЛОВА КАРТА
 # ==========================================
 def render_tactics():
     st.title("🗺️ Тактика та AI-Тренер")
-    st.markdown("Аналіз пересувань гравця на полі та автоматична генерація тренувального плану.")
-    
     df = st.session_state.athletes_db
+    
     selected_player = st.selectbox("Оберіть гравця для тактичного розбору:", df["Ім'я"])
     player_data = df[df["Ім'я"] == selected_player].iloc[0]
     
     col1, col2 = st.columns([2, 1])
     
     with col1:
-        st.subheader("🔥 Теплова карта активності (Heatmap)")
-        
-        # Малюємо спортивне поле
+        st.subheader(f"🔥 Теплова карта: {selected_player} ({player_data['Вид спорту']})")
         fig, ax = plt.subplots(figsize=(8, 5))
-        ax.set_facecolor('#2E7D32') # Зелений колір газону
+        ax.set_facecolor('#2E7D32')
         
-        # Контури поля
+        # Малюємо поле
         ax.plot([0, 0, 100, 100, 0], [0, 60, 60, 0, 0], color='white', linewidth=2)
-        ax.plot([50, 50], [0, 60], color='white', linewidth=2) # Центральна лінія
-        ax.add_patch(plt.Circle((50, 30), 10, color="white", fill=False, linewidth=2)) # Центральне коло
+        ax.plot([50, 50], [0, 60], color='white', linewidth=2)
+        ax.add_patch(plt.Circle((50, 30), 10, color="white", fill=False, linewidth=2))
         
-        # Генерація даних для теплової карти (симуляція на основі характеристик)
-        # Якщо гравець швидкий, радіус розкиду більший
-        spread = 15 if player_data['Швидкість'] > 25 else 8
-        x = np.random.normal(50, spread, 500)
-        y = np.random.normal(30, spread + 5, 500)
+        # Динамічна генерація позицій залежно від гравця
+        spread_x = 20 if player_data['Витривалість'] > 75 else 10
+        spread_y = 15 if player_data['Швидкість'] > 25 else 8
         
-        # Обмежуємо точки межами поля
+        center_x = 50 if player_data['Вид спорту'] in ['Біг', 'Волейбол'] else random.choice([30, 70])
+        
+        x = np.random.normal(center_x, spread_x, 500)
+        y = np.random.normal(30, spread_y, 500)
         x = np.clip(x, 2, 98)
         y = np.clip(y, 2, 58)
         
-        # Створення самої теплової карти
-        hb = ax.hexbin(x, y, gridsize=20, cmap='YlOrRd', alpha=0.7, mincnt=1)
-        
-        ax.set_xticks([])
-        ax.set_yticks([])
-        ax.set_title(f"Зони найбільшої присутності: {selected_player}", color="white", pad=15)
-        
-        # Темний фон для всієї картинки, щоб виглядало стильно
+        ax.hexbin(x, y, gridsize=20, cmap='YlOrRd', alpha=0.7, mincnt=1)
+        ax.set_xticks([]); ax.set_yticks([])
         fig.patch.set_facecolor('#1E1E1E')
         st.pyplot(fig)
         
     with col2:
         st.subheader("🏋️ План від AI-Тренера")
-        
-        # Проста логіка генерації плану тренувань
-        weakness = "None"
         if player_data['Витривалість'] < 60:
-            weakness = "Витривалість"
+            st.error("⚠️ Слабке місце: Витривалість")
+            st.markdown("* Пн: Крос 5 км\n* Ср: Інтервальний біг\n* Пт: Плавання")
         elif player_data['Сила'] < 60:
-            weakness = "Сила"
-        elif player_data['Швидкість'] < 20:
-            weakness = "Швидкість"
-            
-        if weakness == "Витривалість":
-            st.error("⚠️ Виявлено критичну зону: Низька витривалість.")
-            st.markdown("""
-            **План на тиждень:**
-            * **Пн:** Крос 5 км (легкий темп)
-            * **Ср:** Інтервальний біг (4х400м)
-            * **Пт:** Плавання (45 хв)
-            * **Нд:** Відпочинок або розтяжка
-            """)
-        elif weakness == "Сила":
-            st.warning("⚠️ Виявлено критичну зону: Нестача фізичної сили.")
-            st.markdown("""
-            **План на тиждень:**
-            * **Вт:** Тренажерний зал (Присідання, станова)
-            * **Чт:** Пліометрика (стрибки на тумбу)
-            * **Сб:** Робота з власною вагою (TRX)
-            """)
-        elif weakness == "Швидкість":
-            st.info("⚠️ Виявлено критичну зону: Брак вибухової швидкості.")
-            st.markdown("""
-            **План на тиждень:**
-            * **Пн:** Спринти 10х30 метрів
-            * **Ср:** Вправи на координаційній драбині
-            * **Пт:** Човниковий біг
-            """)
+            st.warning("⚠️ Слабке місце: Сила")
+            st.markdown("* Вт: Тренажерний зал\n* Чт: Пліометрика\n* Сб: Робота з власною вагою")
         else:
-            st.success("✅ Гравець має збалансовані показники.")
-            st.markdown("""
-            **План на тиждень:**
-            * Підтримуючі командні тренування.
-            * Фокус на тактиці (перегляд відеозаписів ігор).
-            """)
+            st.success("✅ Збалансовані показники.")
+            st.markdown("* Підтримуючі командні тренування.\n* Фокус на тактиці.")
 
 # ==========================================
-# 5. ЛАБОРАТОРІЯ ФІЗИКИ
+# 5. ДИНАМІЧНА ЛАБОРАТОРІЯ ФІЗИКИ
 # ==========================================
 def render_physics():
-    st.title("⚛️ Інтерактивна Біомеханіка")
+    st.title("⚛️ Персоналізована Біомеханіка")
+    st.markdown("Параметри автоматично підлаштовуються під фізичні дані обраного спортсмена.")
+    
+    df = st.session_state.athletes_db
+    selected_player = st.selectbox("Оберіть спортсмена для симуляції удару/кидка:", df["Ім'я"])
+    player_data = df[df["Ім'я"] == selected_player].iloc[0]
     
     col1, col2 = st.columns([1, 2])
     with col1:
+        st.info(f"📊 Дані: Сила = {player_data['Сила']}, Спорт = {player_data['Вид спорту']}")
+        
+        # Автоматичний розрахунок початкових значень на основі характеристик гравця
+        max_v = float(player_data['Сила'] * 0.4) # Чим більша сила, тим вища потенційна швидкість
+        default_h = 2.5 if player_data['Вид спорту'] == 'Волейбол' else (1.0 if player_data['Вид спорту'] == 'Теніс' else 0.0)
+        
         st.markdown("### Налаштування удару")
-        v0 = st.slider("Швидкість ($v_0$, м/с)", 10.0, 40.0, 22.0)
+        v0 = st.slider("Швидкість ($v_0$, м/с)", 5.0, max(50.0, max_v), max_v)
         angle_deg = st.slider("Кут вильоту ($\\theta$, градуси)", 10.0, 80.0, 35.0)
-        h0 = st.slider("Початкова висота ($h_0$, метри)", 0.0, 3.5, 1.2)
+        h0 = st.slider("Початкова висота ($h_0$, метри)", 0.0, 3.5, default_h)
         
     with col2:
         g = 9.81
@@ -277,7 +253,48 @@ def render_physics():
         st.pyplot(fig)
 
 # ==========================================
-# 6. ДАНІ
+# 6. AI-СИМУЛЯТОР МАТЧІВ (НОВА ФІЧА)
+# ==========================================
+def render_simulator():
+    st.title("🎲 AI-Симулятор Матчів")
+    st.markdown("Прогнозування результату на основі рейтингу ефективності (PER) гравців.")
+    
+    df = st.session_state.athletes_db
+    c1, c2, c3 = st.columns([2, 1, 2])
+    
+    with c1:
+        p1 = st.selectbox("Команда/Гравець 1", df["Ім'я"], key="sim_p1")
+        p1_per = df[df["Ім'я"] == p1].iloc[0]['PER (Рейтинг)']
+        st.metric("PER (Рейтинг)", p1_per)
+        
+    with c2:
+        st.markdown("<h1 style='text-align: center; margin-top: 20px;'>VS</h1>", unsafe_allow_html=True)
+        
+    with c3:
+        p2 = st.selectbox("Команда/Гравець 2", df["Ім'я"], index=min(1, len(df)-1), key="sim_p2")
+        p2_per = df[df["Ім'я"] == p2].iloc[0]['PER (Рейтинг)']
+        st.metric("PER (Рейтинг)", p2_per)
+        
+    if st.button("🚀 Згенерувати матч", use_container_width=True):
+        if p1 == p2:
+            st.error("Оберіть різних гравців!")
+            return
+            
+        with st.spinner('Проводимо аналіз даних та симуляцію...'):
+            time.sleep(1.5) # Імітація складних розрахунків
+            
+            # Логіка симуляції: PER + фактор вдачі (від 0.8 до 1.2)
+            score_1 = p1_per * random.uniform(0.8, 1.2)
+            score_2 = p2_per * random.uniform(0.8, 1.2)
+            
+            st.divider()
+            if score_1 > score_2:
+                st.success(f"🏆 Переможець: **{p1}** (Ймовірність: {int((score_1/(score_1+score_2))*100)}%)")
+            else:
+                st.success(f"🏆 Переможець: **{p2}** (Ймовірність: {int((score_2/(score_1+score_2))*100)}%)")
+
+# ==========================================
+# 7. ДАНІ
 # ==========================================
 def render_io():
     st.title("💾 Експорт Даних")
