@@ -121,7 +121,7 @@ def render_scouting():
     
     col1, col2 = st.columns([1, 2])
     with col1:
-        st.markdown(f"### {player_data['Ім'я']}")
+        st.markdown("### " + player_data["Ім'я"])
         st.caption(f"Спорт: {player_data['Вид спорту']}")
         st.progress(int(player_data['Витривалість']), text=f"Витривалість: {player_data['Витривалість']}%")
         st.progress(int(player_data['Сила']), text=f"Сила: {player_data['Сила']}%")
