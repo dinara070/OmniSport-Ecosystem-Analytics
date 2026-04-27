@@ -1,8 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.express as px
-import plotly.graph_objects as go
+import matplotlib.pyplot as plt
 
 # Налаштування сторінки
 st.set_page_config(page_title="OmniSport Pro", layout="wide", initial_sidebar_state="expanded")
@@ -27,7 +26,7 @@ def calculate_per(row):
 def main():
     with st.sidebar:
         st.title("🏆 OmniSport Pro")
-        st.caption("Performance Analytics v3.0")
+        st.caption("Performance Analytics v3.1 (Stable)")
         st.divider()
         menu = ["🏠 Дашборд", "👥 База гравців", "⚔️ H2H Батл (Скаутинг)", "⚛️ Лабораторія Фізики", "💾 Експорт Даних"]
         choice = st.radio("Навігація", menu)
@@ -90,7 +89,7 @@ def render_crm():
     st.dataframe(st.session_state.athletes_db, use_container_width=True)
 
 # ==========================================
-# 3. H2H СКАУТИНГ (НОВА ФІЧА!)
+# 3. H2H СКАУТИНГ (MATPLOTLIB RADAR)
 # ==========================================
 def render_scouting():
     st.title("⚔️ Head-to-Head: Порівняння гравців")
@@ -102,7 +101,6 @@ def render_scouting():
     with c1:
         p1_name = st.selectbox("🔴 Гравець 1", df["Ім'я"])
     with c2:
-        # Щоб за замовчуванням вибирався другий гравець у списку, якщо він є
         default_index = 1 if len(df) > 1 else 0
         p2_name = st.selectbox("🔵 Гравець 2", df["Ім'я"], index=default_index)
 
@@ -112,34 +110,55 @@ def render_scouting():
     col_radar, col_text = st.columns([2, 1])
     
     with col_radar:
-        categories = ['Витривалість', 'Сила', 'Швидкість (Нормована)', 'Очки (Нормовані)', 'Матчі (Нормовані)']
+        # Налаштування Радарної діаграми через Matplotlib
+        categories = ['Витривалість', 'Сила', 'Швидкість', 'Очки', 'Матчі']
+        N = len(categories)
         
-        # Нормалізуємо значення для графіка (0-100)
-        def normalize(player):
-            return [
+        # Обчислення кутів для осей
+        angles = [n / float(N) * 2 * np.pi for n in range(N)]
+        angles += angles[:1] # Замикаємо коло
+        
+        def get_radar_values(player):
+            vals = [
                 player['Витривалість'], 
                 player['Сила'], 
                 min(int((player['Швидкість'] / 40) * 100), 100),
                 min(player['Очки'] * 5, 100),
                 min(player['Матчі'] * 5, 100)
             ]
+            vals += vals[:1] # Замикаємо коло
+            return vals
 
-        fig = go.Figure()
-        fig.add_trace(go.Scatterpolar(r=normalize(p1_data), theta=categories, fill='toself', name=p1_name, line_color='red'))
+        fig, ax = plt.subplots(figsize=(6, 6), subplot_kw=dict(polar=True))
+        ax.set_theta_offset(np.pi / 2)
+        ax.set_theta_direction(-1)
+        
+        plt.xticks(angles[:-1], categories, size=10)
+        ax.set_rlabel_position(0)
+        plt.yticks([20, 40, 60, 80], ["20", "40", "60", "80"], color="grey", size=8)
+        plt.ylim(0, 100)
+
+        # Графік Гравця 1
+        val1 = get_radar_values(p1_data)
+        ax.plot(angles, val1, linewidth=2, linestyle='solid', label=p1_name, color='#FF5252')
+        ax.fill(angles, val1, '#FF5252', alpha=0.25)
+
+        # Графік Гравця 2 (якщо обрано іншого)
         if p1_name != p2_name:
-            fig.add_trace(go.Scatterpolar(r=normalize(p2_data), theta=categories, fill='toself', name=p2_name, line_color='blue'))
-            
-        fig.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 100])), showlegend=True, height=500)
-        st.plotly_chart(fig, use_container_width=True)
+            val2 = get_radar_values(p2_data)
+            ax.plot(angles, val2, linewidth=2, linestyle='solid', label=p2_name, color='#448AFF')
+            ax.fill(angles, val2, '#448AFF', alpha=0.25)
+
+        plt.legend(loc='upper right', bbox_to_anchor=(1.3, 1.1))
+        st.pyplot(fig)
         
     with col_text:
         st.subheader("🤖 AI-Аналітик")
-        # Генерація автоматичних порад для Гравця 1
         st.markdown(f"**Висновки по: {p1_name}**")
         if p1_data['Витривалість'] < 65:
             st.warning("⚠️ Низька витривалість. Рекомендовано інтервальні тренування.")
         elif p1_data['Сила'] < 65:
-            st.warning("⚠️ Нестача фізичної сили. Додати силові тренування у тренажерному залі.")
+            st.warning("⚠️ Нестача фізичної сили. Додати силові тренування.")
         else:
             st.success("✅ Гравець у чудовій фізичній формі!")
             
@@ -153,7 +172,7 @@ def render_scouting():
                 st.success("✅ Гравець у чудовій фізичній формі!")
 
 # ==========================================
-# 4. ІНТЕРАКТИВНА ЛАБОРАТОРІЯ ФІЗИКИ
+# 4. ЛАБОРАТОРІЯ ФІЗИКИ (MATPLOTLIB)
 # ==========================================
 def render_physics():
     st.title("⚛️ Інтерактивна Біомеханіка")
@@ -174,21 +193,18 @@ def render_physics():
         x = v0 * np.cos(angle_rad) * t
         y = h0 + x * np.tan(angle_rad) - (g * x**2) / (2 * v0**2 * np.cos(angle_rad)**2)
         
-        # Інтерактивний графік Plotly замість Matplotlib
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=x, y=y, mode='lines', name="Траєкторія м'яча", line=dict(color='#00BCD4', width=4)))
+        # Надійний графік через Matplotlib
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.plot(x, y, color="#00BCD4", linewidth=3)
+        ax.fill_between(x, y, 0, color='#00BCD4', alpha=0.15)
+        ax.axhline(0, color='gray', linestyle='--', linewidth=1.5)
         
-        # Додаємо лінію землі
-        fig.add_hline(y=0, line_dash="dash", line_color="gray", annotation_text="Рівень землі")
+        ax.set_title(f"Точка падіння: {x[-1]:.2f} метрів", fontsize=14, pad=10)
+        ax.set_xlabel("Дистанція (метри)")
+        ax.set_ylabel("Висота (метри)")
+        ax.grid(True, linestyle=':', alpha=0.7)
         
-        fig.update_layout(
-            title=f"Дальність польоту: {x[-1]:.2f} метрів",
-            xaxis_title="Дистанція (метри)",
-            yaxis_title="Висота (метри)",
-            hovermode="x unified", # Показує точні дані при наведенні мишки
-            height=400
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        st.pyplot(fig)
 
 # ==========================================
 # 5. ДАНІ
