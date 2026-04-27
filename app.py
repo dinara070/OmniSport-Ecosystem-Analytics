@@ -1,192 +1,206 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 import plotly.express as px
 import plotly.graph_objects as go
-import json
 
-# Налаштування сторінки: широка версія і завжди відкрите меню зліва
+# Налаштування сторінки
 st.set_page_config(page_title="OmniSport Pro", layout="wide", initial_sidebar_state="expanded")
 
-# Ініціалізація розширеної бази даних
+# Ініціалізація бази даних
 if 'athletes_db' not in st.session_state:
     st.session_state.athletes_db = pd.DataFrame({
-        "Ім'я": ["Олександр", "Марія", "Іван"],
-        "Вид спорту": ["Футбол", "Волейбол", "Біг"],
-        "Матчі": [12, 15, 8],
-        "Очки": [5, 45, 0],
-        "Швидкість": [28.5, 22.0, 32.1],
-        "Витривалість": [85, 70, 95], # Оцінка 0-100
-        "Сила": [75, 85, 60]          # Оцінка 0-100
+        "Ім'я": ["Олександр", "Марія", "Іван", "Анна"],
+        "Вид спорту": ["Футбол", "Волейбол", "Біг", "Теніс"],
+        "Матчі": [12, 15, 8, 20],
+        "Очки": [5, 45, 0, 80],
+        "Швидкість": [28.5, 22.0, 32.1, 25.0],
+        "Витривалість": [85, 70, 95, 60],
+        "Сила": [75, 85, 60, 70]
     })
 
 def calculate_per(row):
-    """Алгоритмічний розрахунок рейтингу гравця (Player Efficiency Rating)"""
     base = (row['Швидкість'] * 1.5) + (row['Витривалість'] * 0.8) + (row['Сила'] * 0.9)
     bonus = row['Очки'] * 2 if row['Матчі'] > 0 else 0
     return round((base + bonus) / 3, 1)
 
 def main():
-    # ==========================================
-    # ЛІВА ПАНЕЛЬ (SIDEBAR)
-    # ==========================================
     with st.sidebar:
-        st.image("https://cdn-icons-png.flaticon.com/512/5113/5113764.png", width=80)
-        st.title("OmniSport Pro")
-        st.caption("Ecosystem & Analytics v2.0")
-        
+        st.title("🏆 OmniSport Pro")
+        st.caption("Performance Analytics v3.0")
         st.divider()
-        menu = ["🏠 Дашборд", "👥 База гравців", "🕸️ Скаутинг (Радар)", "⚛️ Лабораторія Фізики", "💾 Дані"]
+        menu = ["🏠 Дашборд", "👥 База гравців", "⚔️ H2H Батл (Скаутинг)", "⚛️ Лабораторія Фізики", "💾 Експорт Даних"]
         choice = st.radio("Навігація", menu)
-        
         st.divider()
-        st.markdown("### 📊 Статус бази")
-        st.info(f"Зареєстровано гравців: **{len(st.session_state.athletes_db)}**")
-        
-        st.markdown("### 💡 AI Порада")
-        st.success("Аналіз показує, що збільшення кута вильоту на 2° покращить дальність подачі у волейболістів на 4%.")
+        st.info(f"Активних гравців: **{len(st.session_state.athletes_db)}**")
 
-    # Перемикач сторінок
     if choice == "🏠 Дашборд":
         render_dashboard()
     elif choice == "👥 База гравців":
         render_crm()
-    elif choice == "🕸️ Скаутинг (Радар)":
+    elif choice == "⚔️ H2H Батл (Скаутинг)":
         render_scouting()
     elif choice == "⚛️ Лабораторія Фізики":
         render_physics()
-    elif choice == "💾 Дані":
+    elif choice == "💾 Експорт Даних":
         render_io()
 
 # ==========================================
-# 1. ДАШБОРД (Головна)
+# 1. ДАШБОРД
 # ==========================================
 def render_dashboard():
-    st.title("🏠 Панель управління (Dashboard)")
+    st.title("🏠 Аналітична панель")
     df = st.session_state.athletes_db
-    
-    # Вираховуємо PER для всіх
     df['PER (Рейтинг)'] = df.apply(calculate_per, axis=1)
     
-    # Віджети з головними цифрами
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Всього спортсменів", len(df))
-    col2.metric("Видів спорту", df["Вид спорту"].nunique())
-    col3.metric("Макс. швидкість", f"{df['Швидкість'].max()} км/год")
-    col4.metric("Топ Рейтинг (PER)", df['PER (Рейтинг)'].max())
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Всього спортсменів", len(df))
+    c2.metric("Макс. швидкість", f"{df['Швидкість'].max()} км/год")
+    c3.metric("Топ Витривалість", df['Витривалість'].max())
+    c4.metric("Топ Рейтинг (PER)", df['PER (Рейтинг)'].max())
     
     st.divider()
-    st.subheader("🏆 Таблиця лідерів (Топ за рейтингом)")
-    st.dataframe(df.sort_values(by="PER (Рейтинг)", ascending=False).style.background_gradient(cmap='viridis', subset=['PER (Рейтинг)']), use_container_width=True)
+    st.subheader("📊 Загальний рейтинг команди")
+    st.dataframe(df.sort_values(by="PER (Рейтинг)", ascending=False).style.background_gradient(cmap='Blues', subset=['PER (Рейтинг)']), use_container_width=True)
 
 # ==========================================
 # 2. БАЗА ГРАВЦІВ (CRM)
 # ==========================================
 def render_crm():
     st.title("👥 Управління складом")
-    
-    with st.expander("➕ Додати нового спортсмена", expanded=True):
+    with st.expander("➕ Додати нового спортсмена", expanded=False):
         with st.form("add_form"):
-            c1, c2, c3 = st.columns(3)
+            c1, c2 = st.columns(2)
             name = c1.text_input("Ім'я")
             sport = c2.selectbox("Вид спорту", ["Волейбол", "Футбол", "Біг", "Теніс"])
-            matches = c3.number_input("Матчі", min_value=0)
             
-            c4, c5, c6, c7 = st.columns(4)
-            score = c4.number_input("Очки/Голи", min_value=0)
-            speed = c5.number_input("Швидкість (км/год)", 0.0, 50.0, 20.0)
-            stamina = c6.slider("Витривалість (0-100)", 0, 100, 50)
-            power = c7.slider("Сила (0-100)", 0, 100, 50)
+            c3, c4, c5, c6, c7 = st.columns(5)
+            matches = c3.number_input("Матчі", min_value=0)
+            score = c4.number_input("Очки", min_value=0)
+            speed = c5.number_input("Швидк. (км/год)", 0.0, 50.0, 20.0)
+            stamina = c6.number_input("Витривал. (0-100)", 0, 100, 50)
+            power = c7.number_input("Сила (0-100)", 0, 100, 50)
             
             if st.form_submit_button("Зберегти гравця"):
                 new_row = pd.DataFrame({"Ім'я": [name], "Вид спорту": [sport], "Матчі": [matches], 
                                       "Очки": [score], "Швидкість": [speed], "Витривалість": [stamina], "Сила": [power]})
                 st.session_state.athletes_db = pd.concat([st.session_state.athletes_db, new_row], ignore_index=True)
-                st.success("Додано!")
+                st.success(f"Спортсмена {name} успішно додано!")
 
     st.dataframe(st.session_state.athletes_db, use_container_width=True)
 
 # ==========================================
-# 3. СКАУТИНГ (Та сама "Цікава фіча")
+# 3. H2H СКАУТИНГ (НОВА ФІЧА!)
 # ==========================================
 def render_scouting():
-    st.title("🕸️ AI Скаутинг: Профілі гравців")
-    st.markdown("Візуальне порівняння характеристик спортсменів для прийняття тактичних рішень.")
+    st.title("⚔️ Head-to-Head: Порівняння гравців")
+    st.markdown("Оберіть двох гравців для прямого порівняння характеристик.")
     
     df = st.session_state.athletes_db
-    player = st.selectbox("Оберіть гравця для аналізу:", df["Ім'я"])
     
-    player_data = df[df["Ім'я"] == player].iloc[0]
+    c1, c2 = st.columns(2)
+    with c1:
+        p1_name = st.selectbox("🔴 Гравець 1", df["Ім'я"])
+    with c2:
+        # Щоб за замовчуванням вибирався другий гравець у списку, якщо він є
+        default_index = 1 if len(df) > 1 else 0
+        p2_name = st.selectbox("🔵 Гравець 2", df["Ім'я"], index=default_index)
+
+    p1_data = df[df["Ім'я"] == p1_name].iloc[0]
+    p2_data = df[df["Ім'я"] == p2_name].iloc[0]
+
+    col_radar, col_text = st.columns([2, 1])
     
-    col1, col2 = st.columns([1, 2])
-    with col1:
-        st.markdown("### " + player_data["Ім'я"])
-        st.caption(f"Спорт: {player_data['Вид спорту']}")
-        st.progress(int(player_data['Витривалість']), text=f"Витривалість: {player_data['Витривалість']}%")
-        st.progress(int(player_data['Сила']), text=f"Сила: {player_data['Сила']}%")
+    with col_radar:
+        categories = ['Витривалість', 'Сила', 'Швидкість (Нормована)', 'Очки (Нормовані)', 'Матчі (Нормовані)']
         
-        # Перераховуємо швидкість у відсотки (макс 40 км/год = 100%)
-        speed_pct = min(int((player_data['Швидкість'] / 40) * 100), 100)
-        st.progress(speed_pct, text=f"Швидкість: {player_data['Швидкість']} км/год")
-        
-    with col2:
-        # Будуємо круту радарну діаграму через Plotly
-        categories = ['Витривалість', 'Сила', 'Швидкість', 'Очки', 'Матчі']
-        # Нормалізуємо значення для красивого графіку
-        values = [player_data['Витривалість'], player_data['Сила'], speed_pct, 
-                  min(player_data['Очки']*5, 100), min(player_data['Матчі']*5, 100)]
-        
-        fig = go.Figure(data=go.Scatterpolar(
-          r=values,
-          theta=categories,
-          fill='toself',
-          line_color='#FF5722'
-        ))
-        fig.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 100])), showlegend=False)
+        # Нормалізуємо значення для графіка (0-100)
+        def normalize(player):
+            return [
+                player['Витривалість'], 
+                player['Сила'], 
+                min(int((player['Швидкість'] / 40) * 100), 100),
+                min(player['Очки'] * 5, 100),
+                min(player['Матчі'] * 5, 100)
+            ]
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatterpolar(r=normalize(p1_data), theta=categories, fill='toself', name=p1_name, line_color='red'))
+        if p1_name != p2_name:
+            fig.add_trace(go.Scatterpolar(r=normalize(p2_data), theta=categories, fill='toself', name=p2_name, line_color='blue'))
+            
+        fig.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 100])), showlegend=True, height=500)
         st.plotly_chart(fig, use_container_width=True)
+        
+    with col_text:
+        st.subheader("🤖 AI-Аналітик")
+        # Генерація автоматичних порад для Гравця 1
+        st.markdown(f"**Висновки по: {p1_name}**")
+        if p1_data['Витривалість'] < 65:
+            st.warning("⚠️ Низька витривалість. Рекомендовано інтервальні тренування.")
+        elif p1_data['Сила'] < 65:
+            st.warning("⚠️ Нестача фізичної сили. Додати силові тренування у тренажерному залі.")
+        else:
+            st.success("✅ Гравець у чудовій фізичній формі!")
+            
+        if p1_name != p2_name:
+            st.markdown(f"**Висновки по: {p2_name}**")
+            if p2_data['Витривалість'] < 65:
+                st.warning("⚠️ Низька витривалість. Рекомендовано інтервальні тренування.")
+            elif p2_data['Сила'] < 65:
+                st.warning("⚠️ Нестача фізичної сили. Додати силові тренування.")
+            else:
+                st.success("✅ Гравець у чудовій фізичній формі!")
 
 # ==========================================
-# 4. ЛАБОРАТОРІЯ ФІЗИКИ
+# 4. ІНТЕРАКТИВНА ЛАБОРАТОРІЯ ФІЗИКИ
 # ==========================================
 def render_physics():
-    st.title("⚛️ Біомеханічна лабораторія")
+    st.title("⚛️ Інтерактивна Біомеханіка")
     
     col1, col2 = st.columns([1, 2])
     with col1:
-        st.info("Введіть параметри удару або кидка для розрахунку ідеальної траєкторії.")
+        st.markdown("### Налаштування удару")
         v0 = st.slider("Швидкість ($v_0$, м/с)", 10.0, 40.0, 22.0)
         angle_deg = st.slider("Кут вильоту ($\\theta$, градуси)", 10.0, 80.0, 35.0)
-        h0 = st.slider("Висота удару ($h_0$, метри)", 0.0, 3.5, 1.2)
+        h0 = st.slider("Початкова висота ($h_0$, метри)", 0.0, 3.5, 1.2)
         
     with col2:
         g = 9.81
         angle_rad = np.radians(angle_deg)
         t_flight = (v0 * np.sin(angle_rad) + np.sqrt((v0 * np.sin(angle_rad))**2 + 2 * g * h0)) / g
+        
         t = np.linspace(0, t_flight, num=100)
         x = v0 * np.cos(angle_rad) * t
         y = h0 + x * np.tan(angle_rad) - (g * x**2) / (2 * v0**2 * np.cos(angle_rad)**2)
         
-        fig, ax = plt.subplots(figsize=(8, 4))
-        ax.plot(x, y, color="#00BCD4", linewidth=3)
-        ax.fill_between(x, y, 0, color='#00BCD4', alpha=0.1)
-        ax.axhline(0, color='gray', linewidth=2)
-        ax.set_title(f"Точка падіння: {x[-1]:.2f} метрів")
-        ax.set_xlabel("Дистанція (м)"); ax.set_ylabel("Висота (м)")
-        st.pyplot(fig)
+        # Інтерактивний графік Plotly замість Matplotlib
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=x, y=y, mode='lines', name="Траєкторія м'яча", line=dict(color='#00BCD4', width=4)))
+        
+        # Додаємо лінію землі
+        fig.add_hline(y=0, line_dash="dash", line_color="gray", annotation_text="Рівень землі")
+        
+        fig.update_layout(
+            title=f"Дальність польоту: {x[-1]:.2f} метрів",
+            xaxis_title="Дистанція (метри)",
+            yaxis_title="Висота (метри)",
+            hovermode="x unified", # Показує точні дані при наведенні мишки
+            height=400
+        )
+        st.plotly_chart(fig, use_container_width=True)
 
 # ==========================================
 # 5. ДАНІ
 # ==========================================
 def render_io():
-    st.title("💾 Синхронізація даних")
+    st.title("💾 Експорт Даних")
     df = st.session_state.athletes_db
-    
     c1, c2 = st.columns(2)
     with c1:
-        st.download_button("📥 Експорт CSV", df.to_csv(index=False).encode('utf-8'), "data.csv", "text/csv", use_container_width=True)
+        st.download_button("📥 Завантажити CSV", df.to_csv(index=False).encode('utf-8'), "omnisport_data.csv", "text/csv")
     with c2:
-        st.download_button("📥 Експорт JSON", df.to_json(orient='records', force_ascii=False), "data.json", "application/json", use_container_width=True)
+        st.download_button("📥 Завантажити JSON", df.to_json(orient='records', force_ascii=False), "omnisport_data.json", "application/json")
 
 if __name__ == "__main__":
     main()
