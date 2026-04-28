@@ -178,32 +178,84 @@ def render_scouting():
             st.info(f"**{p2_name}**: " + ("Лідер швидкості" if p2_data['Швидкість'] > 28 else "Витривалий боєць"))
 
 # ==========================================
-# 4. ТАКТИКА
+# 4. ТАКТИКА ТА ІНТЕРАКТИВНА ДОШКА
 # ==========================================
 def render_tactics():
-    st.title("🗺️ Тактика та AI-Тренер")
-    df = st.session_state.athletes_db
-    selected_player = st.selectbox("Оберіть гравця:", df["Ім'я"])
-    player_data = df[df["Ім'я"] == selected_player].iloc[0]
+    st.title("🗺️ Тактична панель та AI-Тренер")
     
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        st.subheader(f"🔥 Зони активності: {selected_player}")
-        fig, ax = plt.subplots(figsize=(8, 5))
-        ax.set_facecolor('#2E7D32')
-        ax.plot([0, 0, 100, 100, 0], [0, 60, 60, 0, 0], color='white')
-        ax.plot([50, 50], [0, 60], color='white')
+    # Ініціалізація бази точок у сесії, якщо її немає
+    if 'tactical_points' not in st.session_state:
+        st.session_state.tactical_points = []
+
+    df = st.session_state.athletes_db
+    col_settings, col_board = st.columns([1, 2])
+
+    with col_settings:
+        st.subheader("⚙️ Налаштування")
+        selected_player = st.selectbox("Обрати гравця для аналізу:", df["Ім'я"])
+        player_data = df[df["Ім'я"] == selected_player].iloc[0]
         
-        spread = 20 if player_data['Витривалість'] > 75 else 10
-        x = np.random.normal(50, spread, 500)
-        y = np.random.normal(30, 10, 500)
-        ax.hexbin(x, y, gridsize=15, cmap='YlOrRd', alpha=0.7)
+        formation = st.selectbox("Тактична схема (пресет):", 
+                                ["Довільна", "Футбол: 4-3-3", "Футбол: 4-4-2", "Волейбол: Стандарт"])
+        
+        st.divider()
+        st.subheader("🖱️ Керування дошкою")
+        
+        # Слайдери для додавання точки вручну (імітація кліку)
+        st.write("Додати точку активності:")
+        new_x = st.slider("Координата X", 0, 100, 50)
+        new_y = st.slider("Координата Y", 0, 60, 30)
+        
+        if st.button("📍 Поставити мітку", use_container_width=True):
+            st.session_state.tactical_points.append((new_x, new_y))
+            st.success("Точку додано!")
+
+        if st.button("🗑️ Очистити дошку", use_container_width=True, type="secondary"):
+            st.session_state.tactical_points = []
+            st.rerun()
+
+    with col_board:
+        st.subheader(f"🏟️ Інтерактивне поле: {selected_player}")
+        
+        fig, ax = plt.subplots(figsize=(10, 6))
+        # Малюємо поле
+        ax.set_facecolor('#2E7D32')  # Зелений колір газону
+        # Розмітка
+        ax.plot([0, 0, 100, 100, 0], [0, 60, 60, 0, 0], color='white', lw=2)  # Периметр
+        ax.plot([50, 50], [0, 60], color='white', lw=2)  # Центр
+        circle = plt.Circle((50, 30), 9.15, color='white', fill=False, lw=2)
+        ax.add_artist(circle)
+        
+        # Відображення пресетів (схем)
+        if formation == "Футбол: 4-3-3":
+            def_x = [15, 15, 15, 15]; def_y = [10, 25, 35, 50]
+            mid_x = [45, 45, 45]; mid_y = [15, 30, 45]
+            att_x = [75, 85, 75]; att_y = [10, 30, 50]
+            ax.scatter(def_x + mid_x + att_x, def_y + mid_y + att_y, color='white', alpha=0.3, s=100)
+
+        # Відображення точок користувача
+        if st.session_state.tactical_points:
+            pts = np.array(st.session_state.tactical_points)
+            # Малюємо "тепло" навколо точок
+            ax.hexbin(pts[:, 0], pts[:, 1], gridsize=15, cmap='YlOrRd', alpha=0.6, extent=[0, 100, 0, 60])
+            # Малюємо самі точки
+            ax.scatter(pts[:, 0], pts[:, 1], color='yellow', edgecolors='black', s=80, label='Активність')
+
+        ax.set_xlim(-5, 105)
+        ax.set_ylim(-5, 65)
+        ax.axis('off')
         st.pyplot(fig)
-        
-    with col2:
-        st.subheader("🏋️ Поради AI")
-        if player_data['Витривалість'] < 60: st.error("Потрібне кардіо!")
-        else: st.success("Форма стабільна.")
+
+        # Поради AI на основі активності
+        st.divider()
+        if len(st.session_state.tactical_points) > 5:
+            avg_x = np.mean([p[0] for p in st.session_state.tactical_points])
+            if avg_x > 70:
+                st.info(f"💡 **Аналіз AI:** {selected_player} демонструє високу активність в атаці. Рекомендується підстраховка опорним захисником.")
+            elif avg_x < 30:
+                st.warning(f"💡 **Аналіз AI:** Гравець притиснутий до власних воріт. Низький PER в цій зоні.")
+            else:
+                st.success(f"💡 **Аналіз AI:** Баланс гри у центрі поля витримано.")
 
 # ==========================================
 # 5. ЛАБОРАТОРІЯ ФІЗИКИ
