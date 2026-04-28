@@ -48,9 +48,17 @@ def main():
             "⚛️ Лабораторія Фізики",
             "🎲 AI-Симулятор Матчів",
             "🩹 Прогноз Травматизму",
+            "📚 Ресурси та Освіта", # НОВИЙ ПУНКТ
             "💾 Експорт Даних"
         ]
         choice = st.radio("Навігація", menu)
+        st.divider()
+        
+        # Додаємо швидкі посилання в сайдбар
+        st.subheader("🔗 Корисні посилання")
+        st.info("[SportAnalytic](https://sportanalytic.com/)")
+        st.info("[Sport.ua](https://sport.ua/uk)")
+        
         st.divider()
         st.info(f"Активних гравців: **{len(st.session_state.athletes_db)}**")
 
@@ -62,6 +70,7 @@ def main():
     elif choice == "⚛️ Лабораторія Фізики": render_physics()
     elif choice == "🎲 AI-Симулятор Матчів": render_simulator()
     elif choice == "🩹 Прогноз Травматизму": render_injury_prediction()
+    elif choice == "📚 Ресурси та Освіта": render_resources() # ВИКЛИК НОВОЇ ФУНКЦІЇ
     elif choice == "💾 Експорт Даних": render_io()
 
 # ==========================================
@@ -217,6 +226,7 @@ def render_physics():
     
     fig, ax = plt.subplots()
     ax.plot(x, y, color="#00BCD4")
+    ax.set_title("Траєкторія руху снаряда (залежно від сили гравця)")
     st.pyplot(fig)
 
 # ==========================================
@@ -228,12 +238,12 @@ def render_simulator():
     c1, mid, c2 = st.columns([2, 0.5, 2])
     
     p1 = c1.selectbox("Гравець 1", df["Ім'я"], key="s1")
-    p2 = c2.selectbox("Гравець 2", df["Ім'я"], index=1, key="s2")
+    p2 = c2.selectbox("Гравець 2", df["Ім'я"], index=min(1, len(df)-1), key="s2")
     
     if st.button("🚀 Почати симуляцію", use_container_width=True):
         with st.spinner("Аналіз тактики..."):
             time.sleep(1)
-            per1 = df[df["Ім'name"] == p1].iloc[0]['PER (Рейтинг)'] if "Ім'name" in df else df[df["Ім'я"] == p1].iloc[0]['PER (Рейтинг)']
+            per1 = df[df["Ім'я"] == p1].iloc[0]['PER (Рейтинг)']
             per2 = df[df["Ім'я"] == p2].iloc[0]['PER (Рейтинг)']
             
             s1 = per1 * random.uniform(0.8, 1.2)
@@ -241,10 +251,10 @@ def render_simulator():
             
             winner = p1 if s1 > s2 else p2
             st.balloons()
-            st.success(f"🏆 Переміг {winner}!")
+            st.success(f"🏆 У віртуальному поєдинку переміг: {winner}!")
 
 # ==========================================
-# 7. ПРОГНОЗ ТРАВМАТИЗМУ (NEW)
+# 7. ПРОГНОЗ ТРАВМАТИЗМУ
 # ==========================================
 def render_injury_prediction():
     st.title("🩹 AI Health Monitor")
@@ -252,7 +262,6 @@ def render_injury_prediction():
     selected_player = st.selectbox("Оберіть гравця для чекапу:", df["Ім'я"])
     player_data = df[df["Ім'я"] == selected_player].iloc[0]
 
-    # Логіка ризику
     imbalance = abs(player_data['Сила'] - player_data['Витривалість'])
     injury_risk = min(int((imbalance * 1.5) + (player_data['Швидкість'] * 0.5)), 100)
 
@@ -272,17 +281,43 @@ def render_injury_prediction():
         st.write(f"**Дієта:** {random.choice(['Більше білка', 'Магній+', 'Гідратація']) }")
         st.write("**Сон:** 8.5 год")
 
-    st.divider()
-    st.line_chart(np.random.randint(60, 100, 7))
+# ==========================================
+# 8. НОВИЙ РОЗДІЛ: РЕСУРСИ ТА ОСВІТА
+# ==========================================
+def render_resources():
+    st.title("📚 Спортивна Аналітика та Новини")
+    st.markdown("Вивчайте сучасні методи аналізу даних та слідкуйте за світом спорту.")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("📰 Новини та Аналітика")
+        st.info("**SportAnalytic** — Огляди та футбольні новини.")
+        st.link_button("Перейти на SportAnalytic", "https://sportanalytic.com/")
+        
+        st.divider()
+        
+        st.info("**Sport.ua** — Головний спортивний портал України.")
+        st.link_button("Перейти на Sport.ua", "https://sport.ua/uk")
+
+    with col2:
+        st.subheader("🎓 Навчання та Статті")
+        st.success("**Robot Dreams** — Стаття: Як перетворити дані на результати.")
+        st.link_button("Читати статтю", "https://robotdreams.cc/uk/blog/384-data-analiz-u-sporti-yak-peretvoriti-dani-na-rezultati")
+        
+        st.divider()
+        
+        st.success("**Наукова робота** — Використання інформаційних технологій у спорті.")
+        st.link_button("Відкрити публікацію", "https://enpuir.udu.edu.ua/entities/publication/c7becbfd-8d2c-4566-89f4-9a85d3c3062a")
 
 # ==========================================
-# 8. ЕКСПОРТ
+# 9. ЕКСПОРТ
 # ==========================================
 def render_io():
     st.title("💾 Експорт Даних")
     df = st.session_state.athletes_db
-    st.download_button("📥 CSV", df.to_csv(index=False).encode('utf-8'), "data.csv")
-    st.download_button("📥 JSON", df.to_json(orient='records'), "data.json")
+    st.download_button("📥 Завантажити CSV", df.to_csv(index=False).encode('utf-8'), "athletes_data.csv")
+    st.download_button("📥 Завантажити JSON", df.to_json(orient='records'), "athletes_data.json")
 
 if __name__ == "__main__":
     main()
