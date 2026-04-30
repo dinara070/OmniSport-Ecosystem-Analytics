@@ -252,12 +252,35 @@ def render_team_analytics():
 # ==========================================
 def render_crm():
     st.title("👥 Управління складом")
+    st.markdown("Тут ви можете переглядати всю базу спортсменів, шукати конкретних гравців та додавати нових талантів до вашої команди.")
+
+    df = st.session_state.athletes_db
+
+    # 1. Панель пошуку та фільтрації (Робить вигляд справжньої CRM)
+    st.subheader("🔍 Пошук та фільтри")
+    col_search, col_filter = st.columns(2)
+    with col_search:
+        search_query = st.text_input("Пошук за ім'ям", placeholder="Введіть ім'я гравця...")
+    with col_filter:
+        sport_options = ["Всі види"] + list(df['Вид спорту'].dropna().unique())
+        selected_sport = st.selectbox("Фільтр за видом спорту", sport_options)
+
+    # Логіка фільтрації
+    filtered_df = df.copy()
+    if search_query:
+        filtered_df = filtered_df[filtered_df["Ім'я"].str.contains(search_query, case=False, na=False)]
+    if selected_sport != "Всі види":
+        filtered_df = filtered_df[filtered_df['Вид спорту'] == selected_sport]
+
+    st.divider()
+
+    # 2. Форма додавання (зробили кнопку акцентною і додали перевірку на порожнє ім'я)
     with st.expander("➕ Додати нового спортсмена", expanded=False):
         with st.form("add_form"):
             c1, c_age, c2 = st.columns([2, 1, 2])
             name = c1.text_input("Ім'я")
             age = c_age.number_input("Вік", min_value=14, max_value=60, value=20)
-            sport = c2.selectbox("Вид спорту", ["Волейбол", "Футбол", "Біг", "Теніс"])
+            sport = c2.selectbox("Вид спорту", ["Волейбол", "Футбол", "Біг", "Теніс", "Баскетбол", "Бокс"])
 
             c3, c4, c5, c6, c7, c8 = st.columns(6)
             matches = c3.number_input("Матчі", min_value=0)
@@ -267,17 +290,38 @@ def render_crm():
             power = c7.number_input("Сила", 0, 100, 50)
             workload = c8.number_input("Матчів/тиж.", 0, 7, 0)
 
-            if st.form_submit_button("Зберегти гравця"):
-                new_row = pd.DataFrame({
-                    "Ім'я": [name], "Вік": [age], "Вид спорту": [sport], "Матчі": [matches],
-                    "Очки": [score], "Швидкість": [speed], "Витривалість": [stamina],
-                    "Сила": [power], "Навантаження_7днів": [workload]
-                })
-                st.session_state.athletes_db = pd.concat([st.session_state.athletes_db, new_row], ignore_index=True)
-                st.success(f"Спортсмена {name} успішно додано!")
-                st.rerun()
+            if st.form_submit_button("Зберегти гравця", type="primary"):
+                if name.strip() == "":
+                    st.error("⚠️ Будь ласка, введіть ім'я спортсмена.")
+                else:
+                    new_row = pd.DataFrame({
+                        "Ім'я": [name], "Вік": [age], "Вид спорту": [sport], "Матчі": [matches],
+                        "Очки": [score], "Швидкість": [speed], "Витривалість": [stamina],
+                        "Сила": [power], "Навантаження_7днів": [workload]
+                    })
+                    st.session_state.athletes_db = pd.concat([st.session_state.athletes_db, new_row], ignore_index=True)
+                    st.success(f"✅ Спортсмена {name} успішно додано!")
+                    st.rerun()
 
-    st.dataframe(st.session_state.athletes_db, use_container_width=True)
+    # 3. Інтерактивна таблиця з результатами
+    st.subheader(f"📋 Список гравців (Знайдено: {len(filtered_df)})")
+    st.caption("💡 **Підказка:** Ви можете сортувати колонки, натискаючи на їхні назви.")
+
+    # Форматуємо дані перед виводом (забираємо нулі, залишаємо акуратні числа)
+    styled_df = filtered_df.style.format({
+        'Швидкість': '{:.1f}',
+        'Витривалість': '{:.0f}',
+        'Сила': '{:.0f}',
+        'PER (Рейтинг)': '{:.1f}'
+    })
+
+    # Виводимо красиво відформатовану таблицю без системних індексів
+    st.dataframe(
+        styled_df,
+        use_container_width=True,
+        hide_index=True,
+        height=400  # Фіксуємо висоту, щоб візуально відділити таблицю
+    )
 
 # ==========================================
 # 3. H2H СКАУТИНГ
