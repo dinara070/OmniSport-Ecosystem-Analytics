@@ -6,8 +6,6 @@ import matplotlib.patches as patches
 import time
 import random
 import io
-from sklearn.cluster import KMeans
-from sklearn.preprocessing import StandardScaler
 
 # ==========================================
 # 0. КОНФІГУРАЦІЯ ТА ДАНІ
@@ -30,9 +28,9 @@ DEFAULT_DATA = pd.DataFrame({
 if 'athletes_db' not in st.session_state:
     st.session_state.athletes_db = DEFAULT_DATA.copy()
 else:
-    # Захист для сумісності зі старими сесіями
+    # ВИПРАВЛЕННЯ: Якщо в збереженій сесії немає колонки 'Вік' (старі дані)
     if 'Вік' not in st.session_state.athletes_db.columns:
-        st.session_state.athletes_db['Вік'] = 20
+        st.session_state.athletes_db['Вік'] = 20  # Встановлюємо дефолтний вік
 
 if 'tactic_points' not in st.session_state:
     st.session_state.tactic_points = []
@@ -54,14 +52,14 @@ def main():
 
     with st.sidebar:
         st.title("🏆 OmniSport Pro")
-        st.caption("Performance Analytics v10.0")
+        st.caption("Performance Analytics v9.1")
         st.divider()
 
         with st.expander("📂 Завантажити свої дані", expanded=False):
             uploaded_file = st.file_uploader(
-                "CSV/Excel з даними команди",
+                "CSV або Excel з даними команди",
                 type=["csv", "xlsx", "xls"],
-                help="Колонки: Ім'я, Вік, Вид спорту, Матчі, Очки, Швидкість, Витривалість, Сила"
+                help="Файл повинен містити колонки: Ім'я, Вік, Вид спорту, Матчі, Очки, Швидкість, Витривалість, Сила"
             )
             if uploaded_file is not None:
                 try:
@@ -78,6 +76,7 @@ def main():
                     else:
                         if 'Навантаження_7днів' not in df_upload.columns:
                             df_upload['Навантаження_7днів'] = 0
+                        # Захист: якщо у файлі немає колонки Вік
                         if 'Вік' not in df_upload.columns:
                             df_upload['Вік'] = 20
                             
@@ -96,7 +95,6 @@ def main():
             "🏠 Дашборд",
             "📊 Командна аналітика",
             "👥 База гравців",
-            "🧩 Кластеризація AI", # НОВА ВКАЛАДКА ML
             "⚔️ H2H Батл (Скаутинг)",
             "🗺️ Тактична дошка",
             "⚛️ Лабораторія Фізики",
@@ -116,11 +114,9 @@ def main():
         st.divider()
         st.info(f"Активних гравців: **{len(st.session_state.athletes_db)}**")
 
-    # Роутинг сторінок
     if choice == "🏠 Дашборд": render_dashboard()
     elif choice == "📊 Командна аналітика": render_team_analytics()
     elif choice == "👥 База гравців": render_crm()
-    elif choice == "🧩 Кластеризація AI": render_clustering() # ВИКЛИК НОВОЇ ФУНКЦІЇ
     elif choice == "⚔️ H2H Батл (Скаутинг)": render_scouting()
     elif choice == "🗺️ Тактична дошка": render_tactics()
     elif choice == "⚛️ Лабораторія Фізики": render_physics()
@@ -163,21 +159,28 @@ def render_team_analytics():
         return
 
     c1, c2, c3 = st.columns(3)
+    
+    # ВИПРАВЛЕННЯ: Безпечний підрахунок віку
     if 'Вік' in df.columns:
-        c1.metric("Середній вік команди", f"{df['Вік'].mean():.1f} років")
+        avg_age = df['Вік'].mean()
+        c1.metric("Середній вік команди", f"{avg_age:.1f} років")
     else:
-        c1.metric("Середній вік команди", "N/A")
+        c1.metric("Середній вік команди", "Дані відсутні")
 
     if 'Швидкість' in df.columns:
         avg_speed = df['Швидкість'].mean()
-        c2.metric("Середня швидкість", f"{avg_speed:.1f} км/год", f"{round(avg_speed - 30.0, 1)} км/год від ідеалу")
+        ideal_speed = 30.0
+        delta_speed = round(avg_speed - ideal_speed, 1)
+        c2.metric("Середня швидкість", f"{avg_speed:.1f} км/год", f"{delta_speed} км/год від ідеалу (30)")
     else:
-        c2.metric("Середня швидкість", "N/A")
+        c2.metric("Середня швидкість", "Дані відсутні")
 
     if 'PER (Рейтинг)' in df.columns:
-        c3.metric("Середній командний PER", f"{df['PER (Рейтинг)'].mean():.1f}")
+        avg_per = df['PER (Рейтинг)'].mean()
+        c3.metric("Середній командний PER", f"{avg_per:.1f}")
 
     st.divider()
+
     col_pie, col_bar = st.columns(2)
 
     with col_pie:
@@ -186,10 +189,16 @@ def render_team_analytics():
             sport_counts = df['Вид спорту'].value_counts()
             fig1, ax1 = plt.subplots(figsize=(6, 4))
             wedges, texts, autotexts = ax1.pie(
-                sport_counts, labels=sport_counts.index, autopct='%1.1f%%', 
-                startangle=90, colors=plt.cm.Pastel1.colors, textprops=dict(color="w")
+                sport_counts, 
+                labels=sport_counts.index, 
+                autopct='%1.1f%%', 
+                startangle=90, 
+                colors=plt.cm.Pastel1.colors,
+                textprops=dict(color="w")
             )
-            for text in texts: text.set_color('white')
+            for text in texts:
+                text.set_color('white')
+                
             ax1.axis('equal') 
             fig1.patch.set_alpha(0.0)
             st.pyplot(fig1)
@@ -237,116 +246,6 @@ def render_crm():
     st.dataframe(st.session_state.athletes_db, use_container_width=True)
 
 # ==========================================
-# 2.5 КЛАСТЕРИЗАЦІЯ (ML K-MEANS) — НОВА ФІЧА
-# ==========================================
-def render_clustering():
-    st.title("🧩 Кластеризація гравців (ML K-Means)")
-    df = st.session_state.athletes_db.copy()
-
-    if len(df) < 3:
-        st.warning("⚠️ Для коректної роботи алгоритму кластеризації потрібно мінімум 3 гравці у базі.")
-        return
-
-    st.markdown("Алгоритм **K-Means (scikit-learn)** автоматично аналізує фізичні показники гравців (Швидкість, Витривалість, Сила) та розбиває їх на групи зі схожими характеристиками, автоматично призначаючи ігрові ролі.")
-
-    c1, c2 = st.columns([1, 2.5])
-    
-    with c1:
-        st.subheader("⚙️ Налаштування ML")
-        max_clusters = min(5, len(df))
-        n_clusters = st.slider("Кількість груп (кластерів)", min_value=2, max_value=max_clusters, value=min(3, max_clusters))
-        st.caption("Більше кластерів = більш вузька спеціалізація ролей.")
-
-    with c2:
-        # 1. Підготовка даних
-        features = df[['Швидкість', 'Витривалість', 'Сила']]
-        
-        # 2. Масштабування (StandardScaler) - важливо для K-Means
-        scaler = StandardScaler()
-        scaled_features = scaler.fit_transform(features)
-
-        # 3. Навчання моделі K-Means
-        kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
-        df['Cluster'] = kmeans.fit_predict(scaled_features)
-
-        # 4. Аналіз центроїдів для автоматичного неймінгу ролей
-        centroids = scaler.inverse_transform(kmeans.cluster_centers_)
-        role_map = {}
-        
-        for i, center in enumerate(centroids):
-            spd, sta, pwr = center[0], center[1], center[2]
-            
-            # Приводимо швидкість до умовної шкали 100 для порівняння з іншими статами
-            norm_spd = (spd / 40.0) * 100.0 
-            
-            if norm_spd > sta + 5 and norm_spd > pwr + 5:
-                role_map[i] = "Спринтер ⚡"
-            elif pwr > sta + 5 and pwr > norm_spd + 5:
-                role_map[i] = "Руйнівник/Силовик 💪"
-            elif sta > pwr + 5 and sta > norm_spd + 5:
-                role_map[i] = "Двигун команди 🫀"
-            else:
-                role_map[i] = "Універсал / Баланс 🛡️"
-
-        df['AI Роль'] = df['Cluster'].map(role_map)
-
-        st.subheader("📋 Результати розподілу ролей")
-        # Відображаємо гарну табличку
-        st.dataframe(
-            df[['Ім\'я', 'Вид спорту', 'Швидкість', 'Витривалість', 'Сила', 'AI Роль']], 
-            use_container_width=True,
-            hide_index=True
-        )
-
-    st.divider()
-    
-    # 5. 3D Візуалізація кластерів
-    st.subheader("🌌 3D-Карта Характеристик")
-    
-    fig = plt.figure(figsize=(10, 6))
-    ax = fig.add_subplot(111, projection='3d')
-    fig.patch.set_facecolor('none')
-    ax.set_facecolor('none')
-    
-    colors = ['#FF4B4B', '#0068C9', '#29B09D', '#FFC107', '#9C27B0']
-    
-    # Малюємо точки для кожного кластера
-    for cluster_id in range(n_clusters):
-        cluster_data = df[df['Cluster'] == cluster_id]
-        ax.scatter(
-            cluster_data['Швидкість'], 
-            cluster_data['Витривалість'], 
-            cluster_data['Сила'], 
-            c=colors[cluster_id], 
-            s=120, 
-            label=f"{role_map[cluster_id]} (n={len(cluster_data)})", 
-            alpha=0.8, 
-            edgecolors='w'
-        )
-        
-        # Підписи імен гравців поруч із точками
-        for _, row in cluster_data.iterrows():
-            ax.text(row['Швидкість'], row['Витривалість'], row['Сила'] + 2, 
-                    row['Ім\'я'], size=8, zorder=1, color='gray')
-
-    ax.set_xlabel('Швидкість (км/год)')
-    ax.set_ylabel('Витривалість (0-100)')
-    ax.set_zlabel('Сила (0-100)')
-    
-    # Налаштування кольору осей для темної теми
-    ax.xaxis.label.set_color('white')
-    ax.yaxis.label.set_color('white')
-    ax.zaxis.label.set_color('white')
-    ax.tick_params(axis='x', colors='white')
-    ax.tick_params(axis='y', colors='white')
-    ax.tick_params(axis='z', colors='white')
-
-    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-    
-    st.pyplot(fig)
-
-
-# ==========================================
 # 3. H2H СКАУТИНГ
 # ==========================================
 def render_scouting():
@@ -369,9 +268,11 @@ def render_scouting():
 
         def get_radar_values(player):
             vals = [
-                player['Витривалість'], player['Сила'],
+                player['Витривалість'],
+                player['Сила'],
                 min(int((player['Швидкість'] / 40) * 100), 100),
-                min(player['Очки'] * 5, 100), min(player['Матчі'] * 5, 100)
+                min(player['Очки'] * 5, 100),
+                min(player['Матчі'] * 5, 100)
             ]
             vals += vals[:1]
             return vals
@@ -394,6 +295,7 @@ def render_scouting():
 
     with col_text:
         st.subheader("📈 Аналіз")
+        # ВИПРАВЛЕННЯ: Безпечний вивід віку
         age1 = p1_data.get('Вік', 'N/A')
         age2 = p2_data.get('Вік', 'N/A')
         
