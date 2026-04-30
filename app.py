@@ -520,32 +520,64 @@ def render_physics():
 # ==========================================
 def render_simulator():
     st.title("🎲 AI-Симулятор Матчів")
+    st.markdown("""
+    Зіштовхніть двох гравців у віртуальному поєдинку! 
+    Система генерує хід матчу, спираючись на **PER (Рейтинг ефективності)**, швидкість та витривалість спортсменів. Чим вищі показники, тим більше шансів на домінування.
+    """)
+    st.divider()
+
     df = st.session_state.athletes_db
-    c1, _, c2 = st.columns([2, 0.5, 2])
+    
+    # 1. Вибір гравців з яскравим "VS" по центру
+    c1, c_vs, c2 = st.columns([3, 1, 3])
 
-    p1 = c1.selectbox("🔴 Гравець 1", df["Ім'я"], key="s1")
-    p2 = c2.selectbox("🔵 Гравець 2", df["Ім'я"], index=min(1, len(df)-1), key="s2")
+    p1 = c1.selectbox("🔴 Кут 1 (Червоні)", df["Ім'я"], key="s1")
+    
+    # Візуальний акцент по центру
+    c_vs.markdown("<h2 style='text-align: center; margin-top: 25px;'>⚔️ VS</h2>", unsafe_allow_html=True)
+    
+    p2 = c2.selectbox("🔵 Кут 2 (Сині)", df["Ім'я"], index=min(1, len(df)-1), key="s2")
 
-    if st.button("🚀 Почати симуляцію", use_container_width=True):
-        p1_data = df[df["Ім'я"] == p1].iloc[0]
-        p2_data = df[df["Ім'я"] == p2].iloc[0]
+    p1_data = df[df["Ім'я"] == p1].iloc[0]
+    p2_data = df[df["Ім'я"] == p2].iloc[0]
 
-        per1 = p1_data['PER (Рейтинг)']
-        per2 = p2_data['PER (Рейтинг)']
+    per1 = p1_data['PER (Рейтинг)']
+    per2 = p2_data['PER (Рейтинг)']
+    
+    # Підрахунок ймовірності перемоги на основі PER
+    total_per = per1 + per2
+    win_prob_1 = (per1 / total_per) * 100 if total_per > 0 else 50
+    win_prob_2 = (per2 / total_per) * 100 if total_per > 0 else 50
 
-        with st.spinner("Симуляція матчу..."):
-            time.sleep(1)
+    # 2. Передматчеве порівняння (завжди видиме)
+    st.markdown("<br>", unsafe_allow_html=True)
+    with st.expander("📊 Передматчеве порівняння (Tale of the Tape)", expanded=True):
+        st.progress(win_prob_1 / 100)
+        st.caption(f"📈 Ймовірність домінування: **{p1}** ({win_prob_1:.1f}%) проти **{p2}** ({win_prob_2:.1f}%)")
+        
+        stat_c1, stat_c2, stat_c3 = st.columns(3)
+        stat_c1.metric(f"Швидкість", f"{p1_data['Швидкість']} км/год", f"{p1_data['Швидкість'] - p2_data['Швидкість']:.1f} vs {p2}", delta_color="normal")
+        stat_c2.metric(f"Витривалість", int(p1_data['Витривалість']), f"{int(p1_data['Витривалість'] - p2_data['Витривалість'])} vs {p2}", delta_color="normal")
+        stat_c3.metric(f"PER", f"{per1:.1f}", f"{per1 - per2:.1f} vs {p2}", delta_color="normal")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # 3. Кнопка старту (велика і помітна)
+    if st.button("🚀 РОЗПОЧАТИ СИМУЛЯЦІЮ МАТЧУ", type="primary", use_container_width=True):
+        
+        with st.spinner("Свисток! Матч розпочався..."):
+            time.sleep(1.5) # Трохи затримки для інтриги
 
         log = []
         score1, score2 = 0, 0
         minutes = sorted(random.sample(range(1, 91), random.randint(6, 10)))
 
         event_templates = {
-            "гол": ["{player} влучив у ворота!", "{player} реалізував штрафний удар!", "{player} головою відправив м'яч у сітку!", "{player} забив з-за меж штрафної!"],
-            "обіграв": ["{player} обіграв суперника на швидкості {speed:.1f} км/год.", "{player} зробив ключний дриблінг."],
-            "захист": ["{player} перехопив небезпечну передачу.", "{player} відбив удар на останніх секундах!"],
-            "пас": ["{player} зробив ключний пас у штрафну зону.", "{player} розпочав небезпечну атаку."],
-            "карточка": ["{player} отримав жовту картку за грубий фол.", "{player} зупинив атаку ціною жовтої картки."]
+            "гол": ["{player} влучив у ворота!", "{player} реалізував штрафний удар!", "{player} потужно пробив під поперечину!", "{player} забив з-за меж штрафної!"],
+            "обіграв": ["{player} обіграв суперника на швидкості {speed:.1f} км/год.", "{player} зробив блискучий фінт."],
+            "захист": ["{player} перехопив небезпечну передачу.", "{player} відбив атаку на останніх секундах!"],
+            "пас": ["{player} віддав геніальний пас у розріз.", "{player} розпочав небезпечну контратаку."],
+            "карточка": ["{player} отримав попередження за тактичний фол.", "{player} зупинив атаку суперника грубо."]
         }
 
         for minute in minutes:
@@ -586,37 +618,44 @@ def render_simulator():
         st.session_state.match_log = log
 
         st.divider()
-        col_sc1, col_vs, col_sc2 = st.columns([2, 1, 2])
-        col_sc1.markdown(f"### 🔴 {p1}")
-        col_sc1.metric("Голи", score1)
-        col_vs.markdown("## VS", unsafe_allow_html=False)
-        col_sc2.markdown(f"### 🔵 {p2}")
-        col_sc2.metric("Голи", score2)
+        col_sc1, col_vs2, col_sc2 = st.columns([2, 1, 2])
+        col_sc1.markdown(f"<h3 style='text-align: center;'>🔴 {p1}</h3>", unsafe_allow_html=True)
+        col_sc1.markdown(f"<h1 style='text-align: center;'>{score1}</h1>", unsafe_allow_html=True)
+        
+        col_vs2.markdown("<h3 style='text-align: center; color: gray; margin-top: 20px;'>КІНЕЦЬ</h3>", unsafe_allow_html=True)
+        
+        col_sc2.markdown(f"<h3 style='text-align: center;'>🔵 {p2}</h3>", unsafe_allow_html=True)
+        col_sc2.markdown(f"<h1 style='text-align: center;'>{score2}</h1>", unsafe_allow_html=True)
 
         if winner_pen:
-            st.warning(f"⏱️ Основний час — нічия {score1}:{score2}. Перемога по PER: **{winner}**!")
+            st.warning(f"⏱️ Основний час завершився внічию {score1}:{score2}. Перемога за додатковими показниками: **{winner}**!")
         else:
             st.balloons()
-            st.success(f"🏆 Переможець: **{winner}** ({score1}:{score2})")
+            st.success(f"🏆 Впевнена перемога: **{winner}** ({score1}:{score2})")
 
         st.divider()
-        st.subheader("📋 Лог матчу")
-        for event in st.session_state.match_log:
-            col_m, col_i, col_e, col_s = st.columns([1, 0.5, 6, 1.5])
-            col_m.write(f"**{event['хв']}'**")
-            col_i.write(event['icon'])
-            col_e.write(event['подія'])
-            col_s.write(f"`{event['рахунок']}`")
+        st.subheader("📋 Хронологія матчу")
+        
+        # Відображення логу в красивому контейнери
+        with st.container():
+            for event in st.session_state.match_log:
+                col_m, col_i, col_e, col_s = st.columns([1, 0.5, 7, 1.5])
+                col_m.write(f"**{event['хв']}'**")
+                col_i.write(event['icon'])
+                col_e.write(event['подія'])
+                col_s.markdown(f"**[{event['рахунок']}]**")
 
+    # Відображення попереднього логу, якщо симуляція не запущена в цей момент
     elif st.session_state.match_log:
-        st.info("Попередній матч збережено. Натисніть «Симуляцію» для нового.")
-        st.subheader("📋 Лог попереднього матчу")
-        for event in st.session_state.match_log:
-            col_m, col_i, col_e, col_s = st.columns([1, 0.5, 6, 1.5])
-            col_m.write(f"**{event['хв']}'**")
-            col_i.write(event['icon'])
-            col_e.write(event['подія'])
-            col_s.write(f"`{event['рахунок']}`")
+        st.divider()
+        st.info("Попередній матч збережено. Натисніть кнопку вище, щоб розпочати новий.")
+        with st.expander("📋 Лог попереднього матчу", expanded=False):
+            for event in st.session_state.match_log:
+                col_m, col_i, col_e, col_s = st.columns([1, 0.5, 7, 1.5])
+                col_m.write(f"**{event['хв']}'**")
+                col_i.write(event['icon'])
+                col_e.write(event['подія'])
+                col_s.markdown(f"**[{event['рахунок']}]**")
 
 # ==========================================
 # 7. ПРОГНОЗ ТРАВМАТИЗМУ
