@@ -662,61 +662,113 @@ def render_simulator():
 # ==========================================
 def render_injury_prediction():
     st.title("🩹 AI Health Monitor")
+    st.markdown("""
+    Цей модуль аналізує фізичний стан гравця та його поточне навантаження, щоб передбачити ймовірність отримання травми.
+    Система враховує баланс сили та витривалості, а також накопичену втому за останні 7 днів.
+    """)
+    st.divider()
+
     df = st.session_state.athletes_db
-    selected_player = st.selectbox("Оберіть гравця для чекапу:", df["Ім'я"])
+    
+    col_select, col_status = st.columns([2, 1])
+    with col_select:
+        selected_player = st.selectbox("Оберіть гравця для медичного чекапу:", df["Ім'я"])
     player_data = df[df["Ім'я"] == selected_player].iloc[0]
 
-    st.divider()
-    col_edit, col_info = st.columns([1, 2])
+    st.markdown("<br>", unsafe_allow_html=True)
+    
+    # 1. Блок навантаження
+    col_edit, col_info = st.columns([1.5, 2])
     with col_edit:
-        st.subheader("📅 Навантаження за тиждень")
-        workload = st.number_input("Кількість матчів за останні 7 днів", min_value=0, max_value=7, value=int(player_data.get('Навантаження_7днів', 0)), key="workload_input")
+        st.subheader("📅 Навантаження (останні 7 днів)")
+        workload = st.number_input("Кількість зіграних матчів/інтенсивних тренувань", min_value=0, max_value=7, value=int(player_data.get('Навантаження_7днів', 0)), key="workload_input")
+        # Оновлюємо дані в сесії
         st.session_state.athletes_db.loc[st.session_state.athletes_db["Ім'я"] == selected_player, 'Навантаження_7днів'] = workload
 
-    with col_info:
-        if workload >= 3: st.error(f"🚨 **{workload} матчі поспіль** — перевантаження! Ризик травми автоматично підвищено до КРИТИЧНОГО рівня.")
-        elif workload == 2: st.warning(f"⚠️ **{workload} матчі за тиждень** — підвищене навантаження. Стежте за відновленням.")
-        else: st.success(f"✅ **{workload} матч(ів) за тиждень** — нормальне навантаження.")
-
-    st.divider()
+    # Логіка розрахунку ризику
     imbalance = abs(player_data['Сила'] - player_data['Витривалість'])
     base_risk = int((imbalance * 1.5) + (player_data['Швидкість'] * 0.5))
     
-    if workload >= 3: workload_factor = 40
+    if workload >= 3: workload_factor = 45
     elif workload == 2: workload_factor = 20
     else: workload_factor = 0
 
-    if player_data['Витривалість'] < 50: stamina_penalty = 15
+    if player_data['Витривалість'] < 55: stamina_penalty = 20
     else: stamina_penalty = 0
 
     injury_risk = min(base_risk + workload_factor + stamina_penalty, 100)
-
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.subheader("🎯 Ризик травми")
-        if injury_risk < 40:
-            st.success(f"**Низький: {injury_risk}%**")
-            st.progress(injury_risk / 100)
-        elif injury_risk < 75:
-            st.warning(f"**Середній: {injury_risk}%**")
-            st.progress(injury_risk / 100)
+    
+    # Показ статусу вгорі
+    with col_status:
+        st.write("### Статус гравця:")
+        if injury_risk >= 75:
+            st.error("🚨 КРИТИЧНИЙ РИЗИК. Потрібен відпочинок.")
+        elif injury_risk >= 40:
+            st.warning("⚠️ В ЗОНІ РИЗИКУ. Обмежити навантаження.")
         else:
-            st.error(f"**КРИТИЧНИЙ: {injury_risk}%**")
-            st.progress(injury_risk / 100)
+            st.success("✅ ОПТИМАЛЬНА ФОРМА. Готовий до гри.")
+
+    with col_info:
+        st.write("<br>", unsafe_allow_html=True) # Вирівнювання
+        if workload >= 3: 
+            st.error(f"🚨 **{workload} матчі за тиждень** — це серйозне перевантаження! Ризик м'язових травм зростає експоненційно.")
+        elif workload == 2: 
+            st.warning(f"⚠️ **{workload} матчі за тиждень** — підвищене навантаження. Організму потрібен час на регенерацію.")
+        else: 
+            st.success(f"✅ **{workload} матч(ів) за тиждень** — нормальний графік. Організм встигає відновлюватися.")
+
+    st.divider()
+
+    # 2. Детальна аналітика замість графіка
+    c1, c2, c3 = st.columns(3)
+    
+    with c1:
+        st.subheader("🎯 Загальний Ризик")
+        
+        # Визначаємо колір для прогрес-бару через HTML/CSS хак
+        if injury_risk < 40:
+            color = "green"
+            risk_text = "Низький"
+        elif injury_risk < 75:
+            color = "orange"
+            risk_text = "Середній"
+        else:
+            color = "red"
+            risk_text = "Високий"
+            
+        st.markdown(f"<h2 style='text-align: center; color: {color};'>{injury_risk}%</h2>", unsafe_allow_html=True)
+        st.markdown(f"<p style='text-align: center;'>Рівень загрози: <b>{risk_text}</b></p>", unsafe_allow_html=True)
+        st.progress(injury_risk / 100)
 
     with c2:
-        st.subheader("📊 Фактори ризику")
-        factors = {"Базовий ризик": base_risk, "Навантаження (+)": workload_factor, "Виснаження (+)": stamina_penalty}
-        factor_df = pd.DataFrame.from_dict(factors, orient='index', columns=['Значення'])
-        st.bar_chart(factor_df)
+        st.subheader("📊 Фізіологічні метрики")
+        st.caption("Фактори, що формують ризик")
+        
+        st.write("Базове навантаження на суглоби:")
+        st.progress(min(base_risk, 100) / 100)
+        
+        st.write("Рівень накопиченої втоми:")
+        st.progress(min(workload_factor * 2, 100) / 100)
+        
+        st.write("Дефіцит витривалості:")
+        st.progress(min(stamina_penalty * 4, 100) / 100)
 
     with c3:
-        st.subheader("💊 Відновлення")
-        if workload >= 3: st.error("🛑 **Обов'язковий відпочинок 48 год!**")
-        st.write(f"**Дієта:** {random.choice(['Більше білка', 'Магній+', 'Гідратація'])}")
-        st.write("**Сон:** 8.5 год")
-        if player_data['Витривалість'] < 60: st.write("**Тренування:** Легке кардіо, без контакту")
-        else: st.write("**Тренування:** Стандартний план")
+        st.subheader("💊 Протокол відновлення")
+        st.caption("AI Рекомендації для медштабу")
+        
+        if injury_risk >= 75:
+            st.error("🛑 Відсторонити від тренувань на 48 годин.")
+            st.write("✅ **Фізіотерапія:** Кріотерапія, глибокий масаж.")
+            st.write("✅ **Тренування:** Повний спокій.")
+        elif injury_risk >= 40:
+            st.warning("⏳ Застосувати протокол часткового відновлення.")
+            st.write(f"✅ **Дієта:** {random.choice(['Збільшити споживання вуглеводів', 'Додати ізотоніки та магній'])}.")
+            st.write("✅ **Тренування:** Легке кардіо (велотренажер), розтяжка.")
+        else:
+            st.success("💪 Спеціальні заходи не потрібні.")
+            st.write("✅ **Сон:** Не менше 8 годин.")
+            st.write("✅ **Тренування:** В загальній групі, 100% інтенсивність.")
 
 # ==========================================
 # 8. ІСТОРІЯ ФОРМИ (Time-Series)
