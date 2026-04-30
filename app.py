@@ -13,7 +13,6 @@ import io
 
 st.set_page_config(page_title="OmniSport Pro", layout="wide", initial_sidebar_state="expanded")
 
-# ДОДАНО: поле "Вік"
 DEFAULT_DATA = pd.DataFrame({
     "Ім'я": ["Олександр", "Марія", "Іван", "Анна"],
     "Вік": [24, 21, 26, 23], 
@@ -23,11 +22,15 @@ DEFAULT_DATA = pd.DataFrame({
     "Швидкість": [28.5, 22.0, 32.1, 25.0],
     "Витривалість": [85, 70, 95, 40],
     "Сила": [75, 85, 60, 70],
-    "Навантаження_7днів": [2, 3, 1, 4]  # кількість матчів за тиждень
+    "Навантаження_7днів": [2, 3, 1, 4]
 })
 
 if 'athletes_db' not in st.session_state:
     st.session_state.athletes_db = DEFAULT_DATA.copy()
+else:
+    # ВИПРАВЛЕННЯ: Якщо в збереженій сесії немає колонки 'Вік' (старі дані)
+    if 'Вік' not in st.session_state.athletes_db.columns:
+        st.session_state.athletes_db['Вік'] = 20  # Встановлюємо дефолтний вік
 
 if 'tactic_points' not in st.session_state:
     st.session_state.tactic_points = []
@@ -49,10 +52,9 @@ def main():
 
     with st.sidebar:
         st.title("🏆 OmniSport Pro")
-        st.caption("Performance Analytics v9.0")
+        st.caption("Performance Analytics v9.1")
         st.divider()
 
-        # Завантаження власного файлу
         with st.expander("📂 Завантажити свої дані", expanded=False):
             uploaded_file = st.file_uploader(
                 "CSV або Excel з даними команди",
@@ -66,7 +68,7 @@ def main():
                     else:
                         df_upload = pd.read_excel(uploaded_file)
 
-                    required_cols = ["Ім'я", "Вік", "Вид спорту", "Матчі", "Очки", "Швидкість", "Витривалість", "Сила"]
+                    required_cols = ["Ім'я", "Вид спорту", "Матчі", "Очки", "Швидкість", "Витривалість", "Сила"]
                     missing = [c for c in required_cols if c not in df_upload.columns]
 
                     if missing:
@@ -74,6 +76,10 @@ def main():
                     else:
                         if 'Навантаження_7днів' not in df_upload.columns:
                             df_upload['Навантаження_7днів'] = 0
+                        # Захист: якщо у файлі немає колонки Вік
+                        if 'Вік' not in df_upload.columns:
+                            df_upload['Вік'] = 20
+                            
                         st.session_state.athletes_db = df_upload
                         st.success(f"✅ Завантажено {len(df_upload)} гравців!")
                         st.rerun()
@@ -87,7 +93,7 @@ def main():
         st.divider()
         menu = [
             "🏠 Дашборд",
-            "📊 Командна аналітика", # НОВИЙ РОУТ
+            "📊 Командна аналітика",
             "👥 База гравців",
             "⚔️ H2H Батл (Скаутинг)",
             "🗺️ Тактична дошка",
@@ -109,7 +115,7 @@ def main():
         st.info(f"Активних гравців: **{len(st.session_state.athletes_db)}**")
 
     if choice == "🏠 Дашборд": render_dashboard()
-    elif choice == "📊 Командна аналітика": render_team_analytics() # НОВА ВКЛАДКА
+    elif choice == "📊 Командна аналітика": render_team_analytics()
     elif choice == "👥 База гравців": render_crm()
     elif choice == "⚔️ H2H Батл (Скаутинг)": render_scouting()
     elif choice == "🗺️ Тактична дошка": render_tactics()
@@ -142,7 +148,7 @@ def render_dashboard():
     )
 
 # ==========================================
-# 1.5 КОМАНДНА АНАЛІТИКА (TEAM VIEW) — НОВА ФІЧА
+# 1.5 КОМАНДНА АНАЛІТИКА
 # ==========================================
 def render_team_analytics():
     st.title("📊 Командна аналітика (Team View)")
@@ -152,20 +158,26 @@ def render_team_analytics():
         st.warning("Немає даних для аналізу.")
         return
 
-    # Загальні метрики команди
     c1, c2, c3 = st.columns(3)
     
-    avg_age = df['Вік'].mean()
-    c1.metric("Середній вік команди", f"{avg_age:.1f} років")
+    # ВИПРАВЛЕННЯ: Безпечний підрахунок віку
+    if 'Вік' in df.columns:
+        avg_age = df['Вік'].mean()
+        c1.metric("Середній вік команди", f"{avg_age:.1f} років")
+    else:
+        c1.metric("Середній вік команди", "Дані відсутні")
 
-    avg_speed = df['Швидкість'].mean()
-    ideal_speed = 30.0 # Встановлений еталон
-    delta_speed = round(avg_speed - ideal_speed, 1)
-    # Колір дельти: зелений якщо швидше еталона, червоний якщо повільніше
-    c2.metric("Середня швидкість", f"{avg_speed:.1f} км/год", f"{delta_speed} км/год від ідеалу (30)")
+    if 'Швидкість' in df.columns:
+        avg_speed = df['Швидкість'].mean()
+        ideal_speed = 30.0
+        delta_speed = round(avg_speed - ideal_speed, 1)
+        c2.metric("Середня швидкість", f"{avg_speed:.1f} км/год", f"{delta_speed} км/год від ідеалу (30)")
+    else:
+        c2.metric("Середня швидкість", "Дані відсутні")
 
-    avg_per = df['PER (Рейтинг)'].mean()
-    c3.metric("Середній командний PER", f"{avg_per:.1f}")
+    if 'PER (Рейтинг)' in df.columns:
+        avg_per = df['PER (Рейтинг)'].mean()
+        c3.metric("Середній командний PER", f"{avg_per:.1f}")
 
     st.divider()
 
@@ -173,38 +185,33 @@ def render_team_analytics():
 
     with col_pie:
         st.subheader("Розподіл за видами спорту")
-        sport_counts = df['Вид спорту'].value_counts()
-        
-        # Створення кругової діаграми
-        fig1, ax1 = plt.subplots(figsize=(6, 4))
-        wedges, texts, autotexts = ax1.pie(
-            sport_counts, 
-            labels=sport_counts.index, 
-            autopct='%1.1f%%', 
-            startangle=90, 
-            colors=plt.cm.Pastel1.colors,
-            textprops=dict(color="w") # Білий текст для кращого контрасту в темній темі
-        )
-        # Змінюємо колір зовнішніх лейблів, якщо потрібно
-        for text in texts:
-            text.set_color('white') # Можна адаптувати під світлу/темну тему
-            
-        ax1.axis('equal') 
-        fig1.patch.set_alpha(0.0) # Прозорий фон
-        st.pyplot(fig1)
+        if 'Вид спорту' in df.columns:
+            sport_counts = df['Вид спорту'].value_counts()
+            fig1, ax1 = plt.subplots(figsize=(6, 4))
+            wedges, texts, autotexts = ax1.pie(
+                sport_counts, 
+                labels=sport_counts.index, 
+                autopct='%1.1f%%', 
+                startangle=90, 
+                colors=plt.cm.Pastel1.colors,
+                textprops=dict(color="w")
+            )
+            for text in texts:
+                text.set_color('white')
+                
+            ax1.axis('equal') 
+            fig1.patch.set_alpha(0.0)
+            st.pyplot(fig1)
 
     with col_bar:
         st.subheader("Поточні показники vs Ідеал")
-        
-        # Підготовка даних для порівняльної діаграми
-        avg_stats = pd.DataFrame({
-            "Показник": ["Витривалість", "Сила", "Швидкість"],
-            "Команда": [df['Витривалість'].mean(), df['Сила'].mean(), df['Швидкість'].mean()],
-            "Ідеал": [85.0, 80.0, ideal_speed]
-        }).set_index("Показник")
-
-        # Відображення групованої стовпчикової діаграми
-        st.bar_chart(avg_stats, color=["#448AFF", "#FF5252"])
+        if all(col in df.columns for col in ['Витривалість', 'Сила', 'Швидкість']):
+            avg_stats = pd.DataFrame({
+                "Показник": ["Витривалість", "Сила", "Швидкість"],
+                "Команда": [df['Витривалість'].mean(), df['Сила'].mean(), df['Швидкість'].mean()],
+                "Ідеал": [85.0, 80.0, 30.0]
+            }).set_index("Показник")
+            st.bar_chart(avg_stats, color=["#448AFF", "#FF5252"])
 
 # ==========================================
 # 2. БАЗА ГРАВЦІВ (CRM)
@@ -288,9 +295,13 @@ def render_scouting():
 
     with col_text:
         st.subheader("📈 Аналіз")
-        st.info(f"**{p1_name} ({p1_data['Вік']} р.)**: " + ("Лідер швидкості" if p1_data['Швидкість'] > 28 else "Витривалий боєць"))
+        # ВИПРАВЛЕННЯ: Безпечний вивід віку
+        age1 = p1_data.get('Вік', 'N/A')
+        age2 = p2_data.get('Вік', 'N/A')
+        
+        st.info(f"**{p1_name} ({age1} р.)**: " + ("Лідер швидкості" if p1_data['Швидкість'] > 28 else "Витривалий боєць"))
         if p1_name != p2_name:
-            st.info(f"**{p2_name} ({p2_data['Вік']} р.)**: " + ("Лідер швидкості" if p2_data['Швидкість'] > 28 else "Витривалий боєць"))
+            st.info(f"**{p2_name} ({age2} р.)**: " + ("Лідер швидкості" if p2_data['Швидкість'] > 28 else "Витривалий боєць"))
 
 # ==========================================
 # 4. ТАКТИЧНА ДОШКА
