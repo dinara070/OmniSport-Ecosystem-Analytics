@@ -13,8 +13,10 @@ import io
 
 st.set_page_config(page_title="OmniSport Pro", layout="wide", initial_sidebar_state="expanded")
 
+# ДОДАНО: поле "Вік"
 DEFAULT_DATA = pd.DataFrame({
     "Ім'я": ["Олександр", "Марія", "Іван", "Анна"],
+    "Вік": [24, 21, 26, 23], 
     "Вид спорту": ["Футбол", "Волейбол", "Біг", "Теніс"],
     "Матчі": [12, 15, 8, 20],
     "Очки": [5, 45, 0, 80],
@@ -47,7 +49,7 @@ def main():
 
     with st.sidebar:
         st.title("🏆 OmniSport Pro")
-        st.caption("Performance Analytics v8.0")
+        st.caption("Performance Analytics v9.0")
         st.divider()
 
         # Завантаження власного файлу
@@ -55,7 +57,7 @@ def main():
             uploaded_file = st.file_uploader(
                 "CSV або Excel з даними команди",
                 type=["csv", "xlsx", "xls"],
-                help="Файл повинен містити колонки: Ім'я, Вид спорту, Матчі, Очки, Швидкість, Витривалість, Сила"
+                help="Файл повинен містити колонки: Ім'я, Вік, Вид спорту, Матчі, Очки, Швидкість, Витривалість, Сила"
             )
             if uploaded_file is not None:
                 try:
@@ -64,7 +66,7 @@ def main():
                     else:
                         df_upload = pd.read_excel(uploaded_file)
 
-                    required_cols = ["Ім'я", "Вид спорту", "Матчі", "Очки", "Швидкість", "Витривалість", "Сила"]
+                    required_cols = ["Ім'я", "Вік", "Вид спорту", "Матчі", "Очки", "Швидкість", "Витривалість", "Сила"]
                     missing = [c for c in required_cols if c not in df_upload.columns]
 
                     if missing:
@@ -85,13 +87,14 @@ def main():
         st.divider()
         menu = [
             "🏠 Дашборд",
+            "📊 Командна аналітика", # НОВИЙ РОУТ
             "👥 База гравців",
             "⚔️ H2H Батл (Скаутинг)",
             "🗺️ Тактична дошка",
             "⚛️ Лабораторія Фізики",
             "🎲 AI-Симулятор Матчів",
             "🩹 Прогноз Травматизму",
-            "📈 Історія форми", # НОВА ВКАЛАДКА
+            "📈 Історія форми",
             "📚 Ресурси та Освіта",
             "💾 Експорт Даних"
         ]
@@ -106,13 +109,14 @@ def main():
         st.info(f"Активних гравців: **{len(st.session_state.athletes_db)}**")
 
     if choice == "🏠 Дашборд": render_dashboard()
+    elif choice == "📊 Командна аналітика": render_team_analytics() # НОВА ВКЛАДКА
     elif choice == "👥 База гравців": render_crm()
     elif choice == "⚔️ H2H Батл (Скаутинг)": render_scouting()
     elif choice == "🗺️ Тактична дошка": render_tactics()
     elif choice == "⚛️ Лабораторія Фізики": render_physics()
     elif choice == "🎲 AI-Симулятор Матчів": render_simulator()
     elif choice == "🩹 Прогноз Травматизму": render_injury_prediction()
-    elif choice == "📈 Історія форми": render_form_history() # НОВИЙ РОУТ
+    elif choice == "📈 Історія форми": render_form_history()
     elif choice == "📚 Ресурси та Освіта": render_resources()
     elif choice == "💾 Експорт Даних": render_io()
 
@@ -138,14 +142,80 @@ def render_dashboard():
     )
 
 # ==========================================
+# 1.5 КОМАНДНА АНАЛІТИКА (TEAM VIEW) — НОВА ФІЧА
+# ==========================================
+def render_team_analytics():
+    st.title("📊 Командна аналітика (Team View)")
+    df = st.session_state.athletes_db
+
+    if df.empty:
+        st.warning("Немає даних для аналізу.")
+        return
+
+    # Загальні метрики команди
+    c1, c2, c3 = st.columns(3)
+    
+    avg_age = df['Вік'].mean()
+    c1.metric("Середній вік команди", f"{avg_age:.1f} років")
+
+    avg_speed = df['Швидкість'].mean()
+    ideal_speed = 30.0 # Встановлений еталон
+    delta_speed = round(avg_speed - ideal_speed, 1)
+    # Колір дельти: зелений якщо швидше еталона, червоний якщо повільніше
+    c2.metric("Середня швидкість", f"{avg_speed:.1f} км/год", f"{delta_speed} км/год від ідеалу (30)")
+
+    avg_per = df['PER (Рейтинг)'].mean()
+    c3.metric("Середній командний PER", f"{avg_per:.1f}")
+
+    st.divider()
+
+    col_pie, col_bar = st.columns(2)
+
+    with col_pie:
+        st.subheader("Розподіл за видами спорту")
+        sport_counts = df['Вид спорту'].value_counts()
+        
+        # Створення кругової діаграми
+        fig1, ax1 = plt.subplots(figsize=(6, 4))
+        wedges, texts, autotexts = ax1.pie(
+            sport_counts, 
+            labels=sport_counts.index, 
+            autopct='%1.1f%%', 
+            startangle=90, 
+            colors=plt.cm.Pastel1.colors,
+            textprops=dict(color="w") # Білий текст для кращого контрасту в темній темі
+        )
+        # Змінюємо колір зовнішніх лейблів, якщо потрібно
+        for text in texts:
+            text.set_color('white') # Можна адаптувати під світлу/темну тему
+            
+        ax1.axis('equal') 
+        fig1.patch.set_alpha(0.0) # Прозорий фон
+        st.pyplot(fig1)
+
+    with col_bar:
+        st.subheader("Поточні показники vs Ідеал")
+        
+        # Підготовка даних для порівняльної діаграми
+        avg_stats = pd.DataFrame({
+            "Показник": ["Витривалість", "Сила", "Швидкість"],
+            "Команда": [df['Витривалість'].mean(), df['Сила'].mean(), df['Швидкість'].mean()],
+            "Ідеал": [85.0, 80.0, ideal_speed]
+        }).set_index("Показник")
+
+        # Відображення групованої стовпчикової діаграми
+        st.bar_chart(avg_stats, color=["#448AFF", "#FF5252"])
+
+# ==========================================
 # 2. БАЗА ГРАВЦІВ (CRM)
 # ==========================================
 def render_crm():
     st.title("👥 Управління складом")
     with st.expander("➕ Додати нового спортсмена", expanded=False):
         with st.form("add_form"):
-            c1, c2 = st.columns(2)
+            c1, c_age, c2 = st.columns([2, 1, 2])
             name = c1.text_input("Ім'я")
+            age = c_age.number_input("Вік", min_value=14, max_value=60, value=20)
             sport = c2.selectbox("Вид спорту", ["Волейбол", "Футбол", "Біг", "Теніс"])
 
             c3, c4, c5, c6, c7, c8 = st.columns(6)
@@ -158,7 +228,7 @@ def render_crm():
 
             if st.form_submit_button("Зберегти гравця"):
                 new_row = pd.DataFrame({
-                    "Ім'я": [name], "Вид спорту": [sport], "Матчі": [matches],
+                    "Ім'я": [name], "Вік": [age], "Вид спорту": [sport], "Матчі": [matches],
                     "Очки": [score], "Швидкість": [speed], "Витривалість": [stamina],
                     "Сила": [power], "Навантаження_7днів": [workload]
                 })
@@ -218,9 +288,9 @@ def render_scouting():
 
     with col_text:
         st.subheader("📈 Аналіз")
-        st.info(f"**{p1_name}**: " + ("Лідер швидкості" if p1_data['Швидкість'] > 28 else "Витривалий боєць"))
+        st.info(f"**{p1_name} ({p1_data['Вік']} р.)**: " + ("Лідер швидкості" if p1_data['Швидкість'] > 28 else "Витривалий боєць"))
         if p1_name != p2_name:
-            st.info(f"**{p2_name}**: " + ("Лідер швидкості" if p2_data['Швидкість'] > 28 else "Витривалий боєць"))
+            st.info(f"**{p2_name} ({p2_data['Вік']} р.)**: " + ("Лідер швидкості" if p2_data['Швидкість'] > 28 else "Витривалий боєць"))
 
 # ==========================================
 # 4. ТАКТИЧНА ДОШКА
@@ -275,7 +345,6 @@ def render_tactics():
         ax.set_xlim(0, 100)
         ax.set_ylim(0, 60)
 
-        # Розмітка поля
         field = patches.Rectangle((2, 2), 96, 56, linewidth=2, edgecolor='white', facecolor='none')
         ax.add_patch(field)
         ax.plot([50, 50], [2, 58], color='white', linewidth=1.5)
@@ -521,9 +590,8 @@ def render_injury_prediction():
         if player_data['Витривалість'] < 60: st.write("**Тренування:** Легке кардіо, без контакту")
         else: st.write("**Тренування:** Стандартний план")
 
-
 # ==========================================
-# 8. ІСТОРІЯ ФОРМИ (Time-Series) — НОВА ФІЧА
+# 8. ІСТОРІЯ ФОРМИ (Time-Series)
 # ==========================================
 def render_form_history():
     st.title("📈 Історія форми (Time-Series аналіз)")
@@ -536,9 +604,6 @@ def render_form_history():
     selected_player = st.selectbox("Оберіть гравця для аналізу динаміки:", df["Ім'я"])
     player_data = df[df["Ім'я"] == selected_player].iloc[0]
 
-    # Генерація синтетичних історичних даних, що зводяться до поточних метрик гравця.
-    # Ми фіксуємо random seed за іменем гравця, щоб графік не "стрибав" при кожному ререндері, 
-    # але був унікальним для кожного.
     np.random.seed(hash(selected_player) % (2**32))
     
     curr_per = player_data['PER (Рейтинг)']
@@ -546,12 +611,11 @@ def render_form_history():
     curr_speed = player_data['Швидкість']
 
     def generate_trend(current_val, volatility):
-        # Будуємо тренд з кінця (від поточного значення) назад на 9 кроків
         trend = [current_val]
         for _ in range(9):
             val = trend[-1] + np.random.normal(0, volatility)
-            trend.append(max(0, val)) # Уникаємо від'ємних значень
-        return trend[::-1] # Перевертаємо, щоб поточне було останнім
+            trend.append(max(0, val))
+        return trend[::-1]
 
     matches = [f"Матч {i}" for i in range(1, 11)]
     history_df = pd.DataFrame({
@@ -566,20 +630,16 @@ def render_form_history():
     st.markdown(f"### 📊 Динаміка показників: **{selected_player}** за останні 10 матчів")
     st.info("💡 *Наразі застосунок генерує ці історичні дані автоматично на основі поточних статичних показників гравця для демонстрації Time-Series аналітики.*")
 
-    # Графік 1: PER (Загальний рейтинг)
     st.subheader("Зміна рейтингу ефективності (PER)")
     st.line_chart(history_df["PER (Рейтинг)"], color="#FF4B4B")
 
-    # Графіки 2 та 3: Витривалість та Швидкість
     c1, c2 = st.columns(2)
     with c1:
         st.subheader("Витривалість")
         st.line_chart(history_df["Витривалість"], color="#0068C9")
-        
     with c2:
         st.subheader("Швидкість (км/год)")
         st.line_chart(history_df["Швидкість"], color="#29B09D")
-        
 
 # ==========================================
 # 9. РЕСУРСИ ТА ОСВІТА
@@ -617,7 +677,7 @@ def render_io():
 
     st.divider()
     st.subheader("📋 Шаблон для заповнення")
-    template_df = pd.DataFrame(columns=["Ім'я", "Вид спорту", "Матчі", "Очки", "Швидкість", "Витривалість", "Сила", "Навантаження_7днів"])
+    template_df = pd.DataFrame(columns=["Ім'я", "Вік", "Вид спорту", "Матчі", "Очки", "Швидкість", "Витривалість", "Сила", "Навантаження_7днів"])
     st.download_button("📄 Завантажити порожній шаблон CSV", template_df.to_csv(index=False).encode('utf-8'), "template_athletes.csv", mime="text/csv")
     st.caption("Заповніть шаблон та завантажте через «📂 Завантажити свої дані» у сайдбарі.")
 
