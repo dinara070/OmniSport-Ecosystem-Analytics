@@ -5,32 +5,22 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import time
 import random
-import io
 
 # ==========================================
-# 0. КОНФІГУРАЦІЯ ТА ДАНІ
+# 0. CONFIGURATION & STATE INITIALIZATION
 # ==========================================
 
 st.set_page_config(page_title="OmniSport Pro", layout="wide", initial_sidebar_state="expanded")
 
-DEFAULT_DATA = pd.DataFrame({
-    "Ім'я": ["Олександр", "Марія", "Іван", "Анна"],
-    "Вік": [24, 21, 26, 23], 
-    "Вид спорту": ["Футбол", "Волейбол", "Біг", "Теніс"],
-    "Матчі": [12, 15, 8, 20],
-    "Очки": [5, 45, 0, 80],
-    "Швидкість": [28.5, 22.0, 32.1, 25.0],
-    "Витривалість": [85, 70, 95, 40],
-    "Сила": [75, 85, 60, 70],
-    "Навантаження_7днів": [2, 3, 1, 4]
-})
+# We no longer hardcode DEFAULT_DATA.
+# We initialize session state variables only if they don't exist.
 
 if 'athletes_db' not in st.session_state:
-    st.session_state.athletes_db = DEFAULT_DATA.copy()
-else:
-    # ВИПРАВЛЕННЯ: Якщо в збереженій сесії немає колонки 'Вік' (старі дані)
-    if 'Вік' not in st.session_state.athletes_db.columns:
-        st.session_state.athletes_db['Вік'] = 20  # Встановлюємо дефолтний вік
+    # Initialize an empty DataFrame with the required columns
+    st.session_state.athletes_db = pd.DataFrame(columns=[
+        "Ім'я", "Вік", "Вид спорту", "Матчі", "Очки", 
+        "Швидкість", "Витривалість", "Сила", "Навантаження_7днів"
+    ])
 
 if 'tactic_points' not in st.session_state:
     st.session_state.tactic_points = []
@@ -44,11 +34,13 @@ def calculate_per(row):
     return round((base + bonus) / 3, 1)
 
 # ==========================================
-# ГОЛОВНА ЛОГІКА
+# MAIN LOGIC
 # ==========================================
 
 def main():
-    st.session_state.athletes_db['PER (Рейтинг)'] = st.session_state.athletes_db.apply(calculate_per, axis=1)
+    # Only calculate PER if the database is not empty to avoid errors
+    if not st.session_state.athletes_db.empty:
+        st.session_state.athletes_db['PER (Рейтинг)'] = st.session_state.athletes_db.apply(calculate_per, axis=1)
 
     with st.sidebar:
         st.title("🏆 OmniSport Pro")
@@ -76,19 +68,27 @@ def main():
                     else:
                         if 'Навантаження_7днів' not in df_upload.columns:
                             df_upload['Навантаження_7днів'] = 0
-                        # Захист: якщо у файлі немає колонки Вік
                         if 'Вік' not in df_upload.columns:
                             df_upload['Вік'] = 20
                             
+                        # Update the session state with the new data
                         st.session_state.athletes_db = df_upload
                         st.success(f"✅ Завантажено {len(df_upload)} гравців!")
+                        # Clear the match log when new data is uploaded
+                        st.session_state.match_log = [] 
+                        time.sleep(1) # Give the user a moment to see the success message
                         st.rerun()
                 except Exception as e:
                     st.error(f"Помилка читання файлу: {e}")
 
-            if st.button("🔄 Повернути демо-дані", use_container_width=True):
-                st.session_state.athletes_db = DEFAULT_DATA.copy()
-                st.rerun()
+            if st.button("🗑️ Очистити дані", use_container_width=True):
+                # Reset to an empty DataFrame
+                 st.session_state.athletes_db = pd.DataFrame(columns=[
+                    "Ім'я", "Вік", "Вид спорту", "Матчі", "Очки", 
+                    "Швидкість", "Витривалість", "Сила", "Навантаження_7днів"
+                ])
+                 st.session_state.match_log = []
+                 st.rerun()
 
         st.divider()
         menu = [
@@ -114,6 +114,7 @@ def main():
         st.divider()
         st.info(f"Активних гравців: **{len(st.session_state.athletes_db)}**")
 
+    # Routing based on selection
     if choice == "🏠 Дашборд": render_dashboard()
     elif choice == "📊 Командна аналітика": render_team_analytics()
     elif choice == "👥 База гравців": render_crm()
@@ -127,12 +128,17 @@ def main():
     elif choice == "💾 Експорт Даних": render_io()
 
 # ==========================================
-# 1. ДАШБОРД
+# MODULES
 # ==========================================
+
 def render_dashboard():
     st.title("🏠 Аналітична панель")
+    df = st.session_state.athletes_db
     
-    # 1. Компактний блок з інформацією (можна згорнути)
+    if df.empty:
+        st.warning("База даних порожня. Завантажте файл або додайте гравців у розділі 'База гравців'.")
+        return
+
     with st.expander("👋 Вітаємо в командному центрі OmniSport Pro!", expanded=True):
         st.markdown("""
         Цей розділ створений для швидкого моніторингу ключових показників вашої команди:
@@ -140,13 +146,9 @@ def render_dashboard():
         * **Визначити рекорди:** максимальні показники швидкості та витривалості.
         * **Виявити лідерів:** зведена таблиця на основі комплексного рейтингу **PER**.
         """)
-        st.info("💡 **Порада:** Використовуйте бічне меню ліворуч для глибшої аналітики, порівняння гравців (H2H) або налаштування тактики.")
 
-    st.markdown("<br>", unsafe_allow_html=True) # Додаємо трохи візуального простору
+    st.markdown("<br>", unsafe_allow_html=True) 
 
-    df = st.session_state.athletes_db
-
-    # 2. Стилізовані метрики з іконками
     st.subheader("⚡ Ключові показники")
     c1, c2, c3, c4 = st.columns(4)
     
@@ -161,14 +163,10 @@ def render_dashboard():
 
     st.divider()
 
-    # 3. Чистіша таблиця без зайвих нулів та системного індексу
     st.subheader("📊 Загальний рейтинг команди")
-    st.caption("🏆 Гравці відсортовані за рейтингом ефективності. Чим насиченіший синій колір — тим вищий показник.")
     
-    # Сортуємо дані
     formatted_df = df.sort_values(by="PER (Рейтинг)", ascending=False).copy()
     
-    # Налаштовуємо градієнт та форматуємо колонки (забираємо купу нулів після коми)
     styled_df = formatted_df.style.background_gradient(
         cmap='Blues', subset=['PER (Рейтинг)']
     ).format({
@@ -178,36 +176,27 @@ def render_dashboard():
         'PER (Рейтинг)': '{:.1f}'
     })
 
-    # Виводимо таблицю на всю ширину і приховуємо системний індекс
     st.dataframe(styled_df, use_container_width=True, hide_index=True)
 
-# ==========================================
-# 1.5 КОМАНДНА АНАЛІТИКА
-# ==========================================
 def render_team_analytics():
     st.title("📊 Командна аналітика (Team View)")
     df = st.session_state.athletes_db
 
     if df.empty:
-        st.warning("Немає даних для аналізу.")
+        st.warning("База даних порожня. Завантажте файл або додайте гравців.")
         return
 
     c1, c2, c3 = st.columns(3)
     
-    # ВИПРАВЛЕННЯ: Безпечний підрахунок віку
     if 'Вік' in df.columns:
         avg_age = df['Вік'].mean()
         c1.metric("Середній вік команди", f"{avg_age:.1f} років")
-    else:
-        c1.metric("Середній вік команди", "Дані відсутні")
 
     if 'Швидкість' in df.columns:
         avg_speed = df['Швидкість'].mean()
         ideal_speed = 30.0
         delta_speed = round(avg_speed - ideal_speed, 1)
         c2.metric("Середня швидкість", f"{avg_speed:.1f} км/год", f"{delta_speed} км/год від ідеалу (30)")
-    else:
-        c2.metric("Середня швидкість", "Дані відсутні")
 
     if 'PER (Рейтинг)' in df.columns:
         avg_per = df['PER (Рейтинг)'].mean()
@@ -247,34 +236,26 @@ def render_team_analytics():
             }).set_index("Показник")
             st.bar_chart(avg_stats, color=["#448AFF", "#FF5252"])
 
-# ==========================================
-# 2. БАЗА ГРАВЦІВ (CRM)
-# ==========================================
 def render_crm():
     st.title("👥 Управління складом")
-    st.markdown("Тут ви можете переглядати всю базу спортсменів, шукати конкретних гравців та додавати нових талантів до вашої команди.")
-
     df = st.session_state.athletes_db
 
-    # 1. Панель пошуку та фільтрації (Робить вигляд справжньої CRM)
     st.subheader("🔍 Пошук та фільтри")
     col_search, col_filter = st.columns(2)
     with col_search:
         search_query = st.text_input("Пошук за ім'ям", placeholder="Введіть ім'я гравця...")
     with col_filter:
-        sport_options = ["Всі види"] + list(df['Вид спорту'].dropna().unique())
+        sport_options = ["Всі види"] + list(df['Вид спорту'].dropna().unique()) if not df.empty else ["Всі види"]
         selected_sport = st.selectbox("Фільтр за видом спорту", sport_options)
 
-    # Логіка фільтрації
     filtered_df = df.copy()
-    if search_query:
+    if search_query and not filtered_df.empty:
         filtered_df = filtered_df[filtered_df["Ім'я"].str.contains(search_query, case=False, na=False)]
-    if selected_sport != "Всі види":
+    if selected_sport != "Всі види" and not filtered_df.empty:
         filtered_df = filtered_df[filtered_df['Вид спорту'] == selected_sport]
 
     st.divider()
 
-    # 2. Форма додавання (зробили кнопку акцентною і додали перевірку на порожнє ім'я)
     with st.expander("➕ Додати нового спортсмена", expanded=False):
         with st.form("add_form"):
             c1, c_age, c2 = st.columns([2, 1, 2])
@@ -299,36 +280,39 @@ def render_crm():
                         "Очки": [score], "Швидкість": [speed], "Витривалість": [stamina],
                         "Сила": [power], "Навантаження_7днів": [workload]
                     })
+                    # Use concat and update session state
                     st.session_state.athletes_db = pd.concat([st.session_state.athletes_db, new_row], ignore_index=True)
                     st.success(f"✅ Спортсмена {name} успішно додано!")
+                    time.sleep(0.5)
                     st.rerun()
 
-    # 3. Інтерактивна таблиця з результатами
     st.subheader(f"📋 Список гравців (Знайдено: {len(filtered_df)})")
-    st.caption("💡 **Підказка:** Ви можете сортувати колонки, натискаючи на їхні назви.")
+    
+    if not filtered_df.empty:
+        # Create a copy to format, but keep the underlying data numeric
+        display_df = filtered_df.copy()
+        
+        # We need to make sure PER is calculated for display if it's a new row
+        if 'PER (Рейтинг)' not in display_df.columns:
+             display_df['PER (Рейтинг)'] = display_df.apply(calculate_per, axis=1)
 
-    # Форматуємо дані перед виводом (забираємо нулі, залишаємо акуратні числа)
-    styled_df = filtered_df.style.format({
-        'Швидкість': '{:.1f}',
-        'Витривалість': '{:.0f}',
-        'Сила': '{:.0f}',
-        'PER (Рейтинг)': '{:.1f}'
-    })
+        styled_df = display_df.style.format({
+            'Швидкість': '{:.1f}',
+            'Витривалість': '{:.0f}',
+            'Сила': '{:.0f}',
+            'PER (Рейтинг)': '{:.1f}'
+        })
+        st.dataframe(styled_df, use_container_width=True, hide_index=True, height=400)
+    else:
+        st.info("Не знайдено жодного гравця.")
 
-    # Виводимо красиво відформатовану таблицю без системних індексів
-    st.dataframe(
-        styled_df,
-        use_container_width=True,
-        hide_index=True,
-        height=400  # Фіксуємо висоту, щоб візуально відділити таблицю
-    )
-
-# ==========================================
-# 3. H2H СКАУТИНГ
-# ==========================================
 def render_scouting():
     st.title("⚔️ Head-to-Head: Порівняння гравців")
     df = st.session_state.athletes_db
+
+    if df.empty or len(df) < 2:
+        st.warning("Недостатньо даних для порівняння. Додайте мінімум двох гравців.")
+        return
 
     c1, c2 = st.columns(2)
     with c1: p1_name = st.selectbox("🔴 Гравець 1", df["Ім'я"], key="scout_p1")
@@ -349,8 +333,8 @@ def render_scouting():
                 player['Витривалість'],
                 player['Сила'],
                 min(int((player['Швидкість'] / 40) * 100), 100),
-                min(player['Очки'] * 5, 100),
-                min(player['Матчі'] * 5, 100)
+                min(player['Очки'] * 5, 100), # Cap at 100
+                min(player['Матчі'] * 5, 100) # Cap at 100
             ]
             vals += vals[:1]
             return vals
@@ -373,7 +357,6 @@ def render_scouting():
 
     with col_text:
         st.subheader("📈 Аналіз")
-        # ВИПРАВЛЕННЯ: Безпечний вивід віку
         age1 = p1_data.get('Вік', 'N/A')
         age2 = p2_data.get('Вік', 'N/A')
         
@@ -381,12 +364,14 @@ def render_scouting():
         if p1_name != p2_name:
             st.info(f"**{p2_name} ({age2} р.)**: " + ("Лідер швидкості" if p2_data['Швидкість'] > 28 else "Витривалий боєць"))
 
-# ==========================================
-# 4. ТАКТИЧНА ДОШКА
-# ==========================================
 def render_tactics():
     st.title("🗺️ Інтерактивна Тактична Дошка")
     df = st.session_state.athletes_db
+    
+    if df.empty:
+        st.warning("База даних порожня. Завантажте файл або додайте гравців.")
+        return
+        
     selected_player = st.selectbox("Оберіть гравця:", df["Ім'я"])
     player_data = df[df["Ім'я"] == selected_player].iloc[0]
 
@@ -491,15 +476,18 @@ def render_tactics():
         ax.set_yticks([])
         st.pyplot(fig)
 
-# ==========================================
-# 5. ЛАБОРАТОРІЯ ФІЗИКИ
-# ==========================================
 def render_physics():
     st.title("⚛️ Лабораторія Фізики")
     df = st.session_state.athletes_db
+    
+    if df.empty:
+        st.warning("База даних порожня. Завантажте файл або додайте гравців.")
+        return
+        
     player = st.selectbox("Оберіть спортсмена для симуляції:", df["Ім'я"])
     data = df[df["Ім'я"] == player].iloc[0]
 
+    # Use player data directly for sliders
     v0 = st.slider("Швидкість (м/с)", 5.0, 50.0, float(data['Сила'] * 0.4))
     angle = st.slider("Кут (°)", 10, 80, 35)
 
@@ -515,9 +503,6 @@ def render_physics():
     ax.set_title("Траєкторія руху снаряда (залежно від сили гравця)")
     st.pyplot(fig)
 
-# ==========================================
-# 6. СИМУЛЯТОР МАТЧІВ
-# ==========================================
 def render_simulator():
     st.title("🎲 AI-Симулятор Матчів")
     st.markdown("""
@@ -528,28 +513,27 @@ def render_simulator():
 
     df = st.session_state.athletes_db
     
-    # 1. Вибір гравців з яскравим "VS" по центру
+    if df.empty or len(df) < 2:
+        st.warning("Недостатньо даних для симуляції. Додайте мінімум двох гравців.")
+        return
+
     c1, c_vs, c2 = st.columns([3, 1, 3])
 
     p1 = c1.selectbox("🔴 Кут 1 (Червоні)", df["Ім'я"], key="s1")
-    
-    # Візуальний акцент по центру
     c_vs.markdown("<h2 style='text-align: center; margin-top: 25px;'>⚔️ VS</h2>", unsafe_allow_html=True)
-    
     p2 = c2.selectbox("🔵 Кут 2 (Сині)", df["Ім'я"], index=min(1, len(df)-1), key="s2")
 
     p1_data = df[df["Ім'я"] == p1].iloc[0]
     p2_data = df[df["Ім'я"] == p2].iloc[0]
 
-    per1 = p1_data['PER (Рейтинг)']
-    per2 = p2_data['PER (Рейтинг)']
+    # Calculate PER dynamically if missing
+    per1 = calculate_per(p1_data) if 'PER (Рейтинг)' not in p1_data else p1_data['PER (Рейтинг)']
+    per2 = calculate_per(p2_data) if 'PER (Рейтинг)' not in p2_data else p2_data['PER (Рейтинг)']
     
-    # Підрахунок ймовірності перемоги на основі PER
     total_per = per1 + per2
     win_prob_1 = (per1 / total_per) * 100 if total_per > 0 else 50
     win_prob_2 = (per2 / total_per) * 100 if total_per > 0 else 50
 
-    # 2. Передматчеве порівняння (завжди видиме)
     st.markdown("<br>", unsafe_allow_html=True)
     with st.expander("📊 Передматчеве порівняння (Tale of the Tape)", expanded=True):
         st.progress(win_prob_1 / 100)
@@ -562,11 +546,10 @@ def render_simulator():
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # 3. Кнопка старту (велика і помітна)
     if st.button("🚀 РОЗПОЧАТИ СИМУЛЯЦІЮ МАТЧУ", type="primary", use_container_width=True):
         
         with st.spinner("Свисток! Матч розпочався..."):
-            time.sleep(1.5) # Трохи затримки для інтриги
+            time.sleep(1.5) 
 
         log = []
         score1, score2 = 0, 0
@@ -581,7 +564,7 @@ def render_simulator():
         }
 
         for minute in minutes:
-            weight1 = per1 / (per1 + per2)
+            weight1 = per1 / (per1 + per2) if total_per > 0 else 0.5
             active = p1 if random.random() < weight1 else p2
             active_data = p1_data if active == p1 else p2_data
 
@@ -636,7 +619,6 @@ def render_simulator():
         st.divider()
         st.subheader("📋 Хронологія матчу")
         
-        # Відображення логу в красивому контейнери
         with st.container():
             for event in st.session_state.match_log:
                 col_m, col_i, col_e, col_s = st.columns([1, 0.5, 7, 1.5])
@@ -645,7 +627,6 @@ def render_simulator():
                 col_e.write(event['подія'])
                 col_s.markdown(f"**[{event['рахунок']}]**")
 
-    # Відображення попереднього логу, якщо симуляція не запущена в цей момент
     elif st.session_state.match_log:
         st.divider()
         st.info("Попередній матч збережено. Натисніть кнопку вище, щоб розпочати новий.")
@@ -657,9 +638,6 @@ def render_simulator():
                 col_e.write(event['подія'])
                 col_s.markdown(f"**[{event['рахунок']}]**")
 
-# ==========================================
-# 7. ПРОГНОЗ ТРАВМАТИЗМУ
-# ==========================================
 def render_injury_prediction():
     st.title("🩹 AI Health Monitor")
     st.markdown("""
@@ -670,22 +648,39 @@ def render_injury_prediction():
 
     df = st.session_state.athletes_db
     
+    if df.empty:
+        st.warning("База даних порожня. Завантажте файл або додайте гравців.")
+        return
+        
     col_select, col_status = st.columns([2, 1])
     with col_select:
         selected_player = st.selectbox("Оберіть гравця для медичного чекапу:", df["Ім'я"])
+    
     player_data = df[df["Ім'я"] == selected_player].iloc[0]
 
     st.markdown("<br>", unsafe_allow_html=True)
     
-    # 1. Блок навантаження
     col_edit, col_info = st.columns([1.5, 2])
     with col_edit:
         st.subheader("📅 Навантаження (останні 7 днів)")
-        workload = st.number_input("Кількість зіграних матчів/інтенсивних тренувань", min_value=0, max_value=7, value=int(player_data.get('Навантаження_7днів', 0)), key="workload_input")
-        # Оновлюємо дані в сесії
-        st.session_state.athletes_db.loc[st.session_state.athletes_db["Ім'я"] == selected_player, 'Навантаження_7днів'] = workload
+        # Get current workload, default to 0 if missing
+        current_workload = player_data.get('Навантаження_7днів', 0)
+        # Ensure it's treated as a numeric value
+        try:
+             current_workload = int(current_workload)
+        except (ValueError, TypeError):
+             current_workload = 0
+             
+        workload = st.number_input("Кількість зіграних матчів/інтенсивних тренувань", min_value=0, max_value=7, value=current_workload, key=f"workload_input_{selected_player}")
+        
+        # Update session state immediately when input changes
+        if workload != current_workload:
+            # We use boolean indexing to update the specific row
+            st.session_state.athletes_db.loc[st.session_state.athletes_db["Ім'я"] == selected_player, 'Навантаження_7днів'] = workload
+            # Need to fetch the updated data for calculations below
+            player_data = st.session_state.athletes_db[st.session_state.athletes_db["Ім'я"] == selected_player].iloc[0]
 
-    # Логіка розрахунку ризику
+    # Calculate risk using the dynamic player data
     imbalance = abs(player_data['Сила'] - player_data['Витривалість'])
     base_risk = int((imbalance * 1.5) + (player_data['Швидкість'] * 0.5))
     
@@ -698,7 +693,6 @@ def render_injury_prediction():
 
     injury_risk = min(base_risk + workload_factor + stamina_penalty, 100)
     
-    # Показ статусу вгорі
     with col_status:
         st.write("### Статус гравця:")
         if injury_risk >= 75:
@@ -709,7 +703,7 @@ def render_injury_prediction():
             st.success("✅ ОПТИМАЛЬНА ФОРМА. Готовий до гри.")
 
     with col_info:
-        st.write("<br>", unsafe_allow_html=True) # Вирівнювання
+        st.write("<br>", unsafe_allow_html=True) 
         if workload >= 3: 
             st.error(f"🚨 **{workload} матчі за тиждень** — це серйозне перевантаження! Ризик м'язових травм зростає експоненційно.")
         elif workload == 2: 
@@ -719,13 +713,11 @@ def render_injury_prediction():
 
     st.divider()
 
-    # 2. Детальна аналітика замість графіка
     c1, c2, c3 = st.columns(3)
     
     with c1:
         st.subheader("🎯 Загальний Ризик")
         
-        # Визначаємо колір для прогрес-бару через HTML/CSS хак
         if injury_risk < 40:
             color = "green"
             risk_text = "Низький"
@@ -770,9 +762,6 @@ def render_injury_prediction():
             st.write("✅ **Сон:** Не менше 8 годин.")
             st.write("✅ **Тренування:** В загальній групі, 100% інтенсивність.")
 
-# ==========================================
-# 8. ІСТОРІЯ ФОРМИ (Time-Series)
-# ==========================================
 def render_form_history():
     st.title("📈 Історія форми (Time-Series аналіз)")
     df = st.session_state.athletes_db
@@ -786,7 +775,8 @@ def render_form_history():
 
     np.random.seed(hash(selected_player) % (2**32))
     
-    curr_per = player_data['PER (Рейтинг)']
+    # Calculate PER if it's missing (e.g., just uploaded data)
+    curr_per = calculate_per(player_data) if 'PER (Рейтинг)' not in player_data else player_data['PER (Рейтинг)']
     curr_stamina = player_data['Витривалість']
     curr_speed = player_data['Швидкість']
 
@@ -821,9 +811,6 @@ def render_form_history():
         st.subheader("Швидкість (км/год)")
         st.line_chart(history_df["Швидкість"], color="#29B09D")
 
-# ==========================================
-# 9. РЕСУРСИ ТА ОСВІТА
-# ==========================================
 def render_resources():
     st.title("📚 Спортивна Аналітика та Новини")
     st.markdown("Вивчайте сучасні методи аналізу даних та слідкуйте за світом спорту.")
@@ -845,15 +832,15 @@ def render_resources():
         st.success("**Наукова робота** — Використання інформаційних технологій у спорті.")
         st.link_button("Відкрити публікацію", "https://enpuir.udu.edu.ua/entities/publication/c7becbfd-8d2c-4566-89f4-9a85d3c3062a")
 
-# ==========================================
-# 10. ЕКСПОРТ
-# ==========================================
 def render_io():
     st.title("💾 Експорт Даних")
     df = st.session_state.athletes_db
 
-    st.download_button("📥 Завантажити CSV", df.to_csv(index=False).encode('utf-8'), "athletes_data.csv", mime="text/csv")
-    st.download_button("📥 Завантажити JSON", df.to_json(orient='records', force_ascii=False), "athletes_data.json", mime="application/json")
+    if not df.empty:
+        st.download_button("📥 Завантажити CSV", df.to_csv(index=False).encode('utf-8'), "athletes_data.csv", mime="text/csv")
+        st.download_button("📥 Завантажити JSON", df.to_json(orient='records', force_ascii=False), "athletes_data.json", mime="application/json")
+    else:
+        st.warning("Немає даних для експорту.")
 
     st.divider()
     st.subheader("📋 Шаблон для заповнення")
