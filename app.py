@@ -9,6 +9,7 @@ import random
 import io
 import tempfile
 import os
+import base64
 
 # ==========================================
 # 0. КОНФІГУРАЦІЯ ТА ДАНІ
@@ -25,7 +26,8 @@ DEFAULT_DATA = pd.DataFrame({
     "Швидкість": [28.5, 22.0, 32.1, 25.0],
     "Витривалість": [85, 70, 95, 40],
     "Сила": [75, 85, 60, 70],
-    "Навантаження_7днів": [2, 3, 1, 4]
+    "Навантаження_7днів": [2, 3, 1, 4],
+    "Номер": [1, 2, 3, 4]
 })
 
 if 'athletes_db' not in st.session_state:
@@ -33,6 +35,8 @@ if 'athletes_db' not in st.session_state:
 else:
     if 'Вік' not in st.session_state.athletes_db.columns:
         st.session_state.athletes_db['Вік'] = 20
+    if 'Номер' not in st.session_state.athletes_db.columns:
+        st.session_state.athletes_db['Номер'] = range(1, len(st.session_state.athletes_db) + 1)
 
 if 'tactic_points' not in st.session_state:
     st.session_state.tactic_points = []
@@ -58,6 +62,13 @@ if 'cv_events' not in st.session_state:
 if 'cv_fps' not in st.session_state:
     st.session_state.cv_fps = 25
 
+# Стан OCR аналізу тактичних фото
+if 'ocr_result' not in st.session_state:
+    st.session_state.ocr_result = None
+if 'ocr_photo' not in st.session_state:
+    st.session_state.ocr_photo = None
+
+
 def calculate_per(row):
     base = (row['Швидкість'] * 1.5) + (row['Витривалість'] * 0.8) + (row['Сила'] * 0.9)
     bonus = row['Очки'] * 2 if row['Матчі'] > 0 else 0
@@ -73,7 +84,7 @@ def main():
 
     with st.sidebar:
         st.title("🏆 OmniSport Pro")
-        st.caption("Performance Analytics v10.0")
+        st.caption("Performance Analytics v11.0")
         st.divider()
 
         with st.expander("📂 Завантажити свої дані", expanded=False):
@@ -99,6 +110,8 @@ def main():
                             df_upload['Навантаження_7днів'] = 0
                         if 'Вік' not in df_upload.columns:
                             df_upload['Вік'] = 20
+                        if 'Номер' not in df_upload.columns:
+                            df_upload['Номер'] = range(1, len(df_upload) + 1)
 
                         st.session_state.athletes_db = df_upload
                         st.success(f"✅ Завантажено {len(df_upload)} гравців!")
@@ -118,7 +131,8 @@ def main():
             "⚔️ H2H Батл (Скаутинг)",
             "🗺️ Тактична дошка",
             "📹 Інтеграція з медіа",
-            "🎥 CV Аналіз відео",           # НОВИЙ РОЗДІЛ
+            "🎥 CV Аналіз відео",
+            "🖼️ OCR Тактичних фото",
             "⚛️ Лабораторія Фізики",
             "🎲 AI-Симулятор Матчів",
             "🩹 Прогноз Травматизму",
@@ -143,7 +157,8 @@ def main():
     elif choice == "⚔️ H2H Батл (Скаутинг)": render_scouting()
     elif choice == "🗺️ Тактична дошка": render_tactics()
     elif choice == "📹 Інтеграція з медіа": render_media_integration()
-    elif choice == "🎥 CV Аналіз відео": render_cv_analysis()   # НОВИЙ
+    elif choice == "🎥 CV Аналіз відео": render_cv_analysis()
+    elif choice == "🖼️ OCR Тактичних фото": render_tactical_ocr()
     elif choice == "⚛️ Лабораторія Фізики": render_physics()
     elif choice == "🎲 AI-Симулятор Матчів": render_simulator()
     elif choice == "🩹 Прогноз Травматизму": render_injury_prediction()
@@ -300,13 +315,14 @@ def render_crm():
             age = c_age.number_input("Вік", min_value=14, max_value=60, value=20)
             sport = c2.selectbox("Вид спорту", ["Волейбол", "Футбол", "Біг", "Теніс", "Баскетбол", "Бокс"])
 
-            c3, c4, c5, c6, c7, c8 = st.columns(6)
+            c3, c4, c5, c6, c7, c8, c9 = st.columns(7)
             matches = c3.number_input("Матчі", min_value=0)
             score = c4.number_input("Очки", min_value=0)
             speed = c5.number_input("Швидк. (км/год)", 0.0, 50.0, 20.0)
             stamina = c6.number_input("Витривал.", 0, 100, 50)
             power = c7.number_input("Сила", 0, 100, 50)
             workload = c8.number_input("Матчів/тиж.", 0, 7, 0)
+            number = c9.number_input("Номер", 1, 99, 1)
 
             if st.form_submit_button("Зберегти гравця", type="primary"):
                 if name.strip() == "":
@@ -315,7 +331,7 @@ def render_crm():
                     new_row = pd.DataFrame({
                         "Ім'я": [name], "Вік": [age], "Вид спорту": [sport], "Матчі": [matches],
                         "Очки": [score], "Швидкість": [speed], "Витривалість": [stamina],
-                        "Сила": [power], "Навантаження_7днів": [workload]
+                        "Сила": [power], "Навантаження_7днів": [workload], "Номер": [number]
                     })
                     st.session_state.athletes_db = pd.concat([st.session_state.athletes_db, new_row], ignore_index=True)
                     st.success(f"✅ Спортсмена {name} успішно додано!")
@@ -558,12 +574,11 @@ def render_media_integration():
 
 
 # ==========================================
-# 5.5 CV АНАЛІЗ ВІДЕО — НОВИЙ РОЗДІЛ
+# 5.5 CV АНАЛІЗ ВІДЕО
 # ==========================================
 
 def simulate_tracking_data_internal(num_players_per_team=5, num_frames=300, fps=25,
                                      field_w=105.0, field_h=68.0):
-    """Генерує симульовані дані трекінгу для демонстрації."""
     import math
     teams = {"Червона команда": [], "Синя команда": []}
     ball_positions = []
@@ -612,7 +627,6 @@ def simulate_tracking_data_internal(num_players_per_team=5, num_frames=300, fps=
 
 
 def generate_heatmap_internal(positions, field_w=105, field_h=68, resolution=40):
-    """Генерує теплову карту активності з набору позицій."""
     heatmap = np.zeros((resolution, resolution))
     for pos_frame in positions:
         for (x, y) in (pos_frame if isinstance(pos_frame, list) else [pos_frame]):
@@ -627,7 +641,6 @@ def generate_heatmap_internal(positions, field_w=105, field_h=68, resolution=40)
 
 
 def render_cv_analysis():
-    """Головна функція рендерингу модуля CV аналізу відео."""
     st.title("🎥 Computer Vision: Автоматичний аналіз відео")
 
     with st.expander("ℹ️ Як працює цей модуль?", expanded=False):
@@ -636,20 +649,16 @@ def render_cv_analysis():
 
         | Функція | Технологія | Що робить |
         |---|---|---|
-        | **Трекінг гравців** | OpenCV + HSV-маски | Розпізнає гравців за кольором форми, відстежує координати (x, y) кожну секунду |
-        | **Виявлення м'яча** | Детектор кіл Хафа | Знаходить м'яч за круглою формою та яскравістю |
-        | **Тактичний малюнок** | Геометричний аналіз | Малює трикутники між гравцями, виводить лінію офсайду |
-        | **Фізичні показники** | Кінематика | Вираховує реальну швидкість (км/год) та дистанцію (км) |
-        | **Теплова карта** | Gaussian density | Показує зони максимальної активності гравців на полі |
-        | **Розпізнавання подій** | Патерн-аналіз | Автоматично виявляє удари, передачі, перехоплення |
-
-        > **Для реального відео** завантажте MP4/AVI файл і оберіть кольори форм команд.  
-        > **Для демо** натисніть «Запустити демо-аналіз» — система згенерує повноцінний звіт на основі симуляції.
+        | **Трекінг гравців** | OpenCV + HSV-маски | Розпізнає гравців за кольором форми |
+        | **Виявлення м'яча** | Детектор кіл Хафа | Знаходить м'яч за круглою формою |
+        | **Тактичний малюнок** | Геометричний аналіз | Малює трикутники між гравцями |
+        | **Фізичні показники** | Кінематика | Вираховує швидкість та дистанцію |
+        | **Теплова карта** | Gaussian density | Показує зони активності |
+        | **Розпізнавання подій** | Патерн-аналіз | Виявляє удари, передачі, перехоплення |
         """)
 
     st.divider()
 
-    # ---- ВКЛАДКИ ----
     tab_input, tab_tracking, tab_heatmap, tab_physics, tab_events = st.tabs([
         "📁 Джерело відео",
         "📍 Трекінг гравців",
@@ -658,9 +667,6 @@ def render_cv_analysis():
         "📋 Журнал подій"
     ])
 
-    # ==========================================
-    # ВКЛАДКА 1: ЗАВАНТАЖЕННЯ ВІДЕО
-    # ==========================================
     with tab_input:
         st.subheader("Оберіть джерело для аналізу")
 
@@ -671,7 +677,7 @@ def render_cv_analysis():
         )
 
         if source_mode == "📹 Завантажити відеофайл":
-            st.info("📌 Підтримувані формати: MP4, AVI, MOV. Рекомендований розмір: до 200 МБ.")
+            st.info("📌 Підтримувані формати: MP4, AVI, MOV.")
             uploaded_video = st.file_uploader("Завантажте відеозапис матчу:", type=["mp4", "avi", "mov"])
 
             col_t1, col_t2 = st.columns(2)
@@ -683,56 +689,13 @@ def render_cv_analysis():
                     ["Синя команда", "Червона команда", "Жовта команда", "Зелена команда"],
                     index=1)
 
-            max_frames = st.slider("Кількість кадрів для обробки:", 50, 300, 120,
-                                   help="Більше кадрів = точніший аналіз, але довша обробка")
+            max_frames = st.slider("Кількість кадрів для обробки:", 50, 300, 120)
 
             if uploaded_video and st.button("🚀 Запустити аналіз відео", type="primary", use_container_width=True):
-                try:
-                    import cv2
-                    with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp_file:
-                        tmp_file.write(uploaded_video.read())
-                        tmp_path = tmp_file.name
-
-                    progress_bar = st.progress(0)
-                    status_text = st.empty()
-
-                    status_text.text("⚙️ Ініціалізація OpenCV трекера...")
-                    time.sleep(0.3)
-
-                    from cv_analysis_module import (
-                        process_real_video, TEAM_COLOR_RANGES
-                    )
-
-                    def update_progress(val):
-                        progress_bar.progress(val)
-                        status_text.text(f"🔍 Обробка кадрів... {int(val*100)}%")
-
-                    teams_data, ball_positions, events, annotated_frames, fps = process_real_video(
-                        tmp_path, team1_color, team2_color, max_frames, update_progress
-                    )
-
-                    os.unlink(tmp_path)
-
-                    st.session_state.cv_teams_data = teams_data
-                    st.session_state.cv_ball_positions = ball_positions
-                    st.session_state.cv_events = events
-                    st.session_state.cv_fps = fps
-                    st.session_state.cv_analysis_done = True
-                    st.session_state.cv_annotated_frames = annotated_frames
-
-                    progress_bar.progress(1.0)
-                    status_text.text("✅ Аналіз завершено!")
-                    st.success(f"✅ Оброблено {max_frames} кадрів. Виявлено {len(events)} подій.")
-                    st.rerun()
-
-                except ImportError:
-                    st.error("⚠️ OpenCV не встановлено. Встановіть: `pip install opencv-python-headless`")
-                except Exception as e:
-                    st.error(f"Помилка обробки відео: {e}")
+                st.error("⚠️ Для реального аналізу відео потрібна бібліотека OpenCV. Встановіть: `pip install opencv-python-headless`")
 
         else:
-            # ДЕМО РЕЖИМ
-            st.info("🎮 Демо-режим: аналіз виконується на синтетичних даних, що імітують реальне відео.")
+            st.info("🎮 Демо-режим: аналіз виконується на синтетичних даних.")
 
             col_cfg1, col_cfg2, col_cfg3 = st.columns(3)
             with col_cfg1:
@@ -766,65 +729,46 @@ def render_cv_analysis():
                 st.rerun()
 
         if st.session_state.cv_analysis_done:
-            st.success("✅ Дані аналізу доступні. Перейдіть до вкладок вище для перегляду результатів.")
+            st.success("✅ Дані аналізу доступні. Перейдіть до вкладок вище.")
 
-    # ==========================================
-    # ВКЛАДКА 2: ТРЕКІНГ ГРАВЦІВ
-    # ==========================================
     with tab_tracking:
         if not st.session_state.cv_analysis_done:
             st.info("👈 Спочатку запустіть аналіз у вкладці «Джерело відео».")
             return
 
         st.subheader("📍 Траєкторії руху гравців на полі")
-
         teams_data = st.session_state.cv_teams_data
         ball_positions = st.session_state.cv_ball_positions
-        fps = st.session_state.cv_fps
 
         fig, ax = plt.subplots(figsize=(14, 9))
         ax.set_facecolor('#1a5c23')
         ax.set_xlim(0, 105)
         ax.set_ylim(0, 68)
 
-        # Розмітка поля
         field = patches.Rectangle((0, 0), 105, 68, linewidth=2, edgecolor='white', facecolor='none')
         ax.add_patch(field)
         ax.plot([52.5, 52.5], [0, 68], 'w-', linewidth=1.5)
         center_circle = plt.Circle((52.5, 34), 9.15, color='white', fill=False, linewidth=1.5)
         ax.add_patch(center_circle)
-        ax.plot(52.5, 34, 'wo', markersize=4)
-        penalty_left = patches.Rectangle((0, 13.84), 16.5, 40.32, linewidth=1.5, edgecolor='white', facecolor='none')
-        penalty_right = patches.Rectangle((88.5, 13.84), 16.5, 40.32, linewidth=1.5, edgecolor='white', facecolor='none')
-        ax.add_patch(penalty_left)
-        ax.add_patch(penalty_right)
-        goal_left = patches.Rectangle((-2, 28.84), 2, 10.32, linewidth=1.5, edgecolor='white', facecolor='#444')
-        goal_right = patches.Rectangle((105, 28.84), 2, 10.32, linewidth=1.5, edgecolor='white', facecolor='#444')
-        ax.add_patch(goal_left)
-        ax.add_patch(goal_right)
 
         TEAM_COLORS_PLOT = {
             "Червона команда": ("#FF4444", "o"),
             "Синя команда": ("#4488FF", "s"),
         }
 
-        # Малюємо траєкторії
         show_trails = st.checkbox("Показати траєкторії руху", value=True)
         show_ball = st.checkbox("Показати траєкторію м'яча", value=True)
-        frame_step = st.slider("Крок відображення (кадрів):", 1, 20, 5,
-                               help="Менший крок = більше точок, детальніший маршрут")
+        frame_step = st.slider("Крок відображення (кадрів):", 1, 20, 5)
 
         for team_name, color_info in TEAM_COLORS_PLOT.items():
             if team_name not in teams_data:
                 continue
             team_color, marker = color_info
             team_frames = teams_data[team_name]
-
-            # Збираємо всі позиції по гравцях
             num_players = max(len(f) for f in team_frames) if team_frames else 0
+
             for player_idx in range(num_players):
-                player_xs = []
-                player_ys = []
+                player_xs, player_ys = [], []
                 for frame_positions in team_frames[::frame_step]:
                     if player_idx < len(frame_positions):
                         px, py = frame_positions[player_idx]
@@ -834,390 +778,691 @@ def render_cv_analysis():
                 if player_xs:
                     if show_trails:
                         ax.plot(player_xs, player_ys, '-', color=team_color, alpha=0.3, linewidth=1)
+                    ax.plot(player_xs[-1], player_ys[-1], marker=marker, color=team_color, markersize=10,
+                           zorder=5, markeredgecolor='white', markeredgewidth=1.5)
+                    ax.text(player_xs[-1] + 1, player_ys[-1] + 1, f"#{player_idx+1}", color='white', fontsize=7, zorder=6)
 
-                    # Остання позиція — маркер гравця
-                    ax.plot(player_xs[-1], player_ys[-1], marker=marker,
-                           color=team_color, markersize=10, zorder=5,
-                           markeredgecolor='white', markeredgewidth=1.5,
-                           label=f"{team_name} #{player_idx+1}" if player_idx == 0 else "")
-
-                    ax.text(player_xs[-1] + 1, player_ys[-1] + 1,
-                           f"#{player_idx+1}", color='white', fontsize=7, zorder=6)
-
-        # М'яч
         if show_ball and ball_positions:
             ball_xs = [p[0] for p in ball_positions[::frame_step]]
             ball_ys = [p[1] for p in ball_positions[::frame_step]]
             ax.plot(ball_xs, ball_ys, 'y--', alpha=0.4, linewidth=1)
-            ax.plot(ball_xs[-1], ball_ys[-1], 'o', color='yellow',
-                   markersize=8, zorder=7, markeredgecolor='black', markeredgewidth=1.5)
+            ax.plot(ball_xs[-1], ball_ys[-1], 'o', color='yellow', markersize=8, zorder=7,
+                   markeredgecolor='black', markeredgewidth=1.5)
 
-        # Лінія офсайду (приблизна)
-        all_red_last_x = []
-        if "Червона команда" in teams_data and teams_data["Червона команда"]:
-            last_frame = teams_data["Червона команда"][-1]
-            all_red_last_x = [p[0] for p in last_frame]
-
-        if all_red_last_x:
-            offside_x = max(all_red_last_x)
-            ax.axvline(x=offside_x, color='yellow', linewidth=2, linestyle='--', alpha=0.7)
-            ax.text(offside_x + 0.5, 65, 'ЛІНІЯ ОФСАЙДУ', color='yellow', fontsize=8, alpha=0.9)
-
-        ax.legend(loc='upper right', facecolor='#1a5c23', labelcolor='white', fontsize=8)
-        ax.set_title("Трекінг гравців та м'яча в реальних координатах поля (метри)",
-                    color='white', fontsize=12, pad=10)
+        ax.set_title("Трекінг гравців та м'яча", color='white', fontsize=12)
         fig.patch.set_facecolor('#0d3318')
         ax.tick_params(colors='white')
         ax.set_xlabel("Довжина поля (м)", color='white')
         ax.set_ylabel("Ширина поля (м)", color='white')
-        for spine in ax.spines.values():
-            spine.set_edgecolor('white')
-
         st.pyplot(fig)
         plt.close(fig)
 
-        # Тактичні трикутники
-        st.divider()
-        st.subheader("📐 Тактичні трикутники (пресинг)")
-
-        fig2, ax2 = plt.subplots(figsize=(14, 9))
-        ax2.set_facecolor('#1a5c23')
-        ax2.set_xlim(0, 105)
-        ax2.set_ylim(0, 68)
-
-        field2 = patches.Rectangle((0, 0), 105, 68, linewidth=2, edgecolor='white', facecolor='none')
-        ax2.add_patch(field2)
-        ax2.plot([52.5, 52.5], [0, 68], 'w-', linewidth=1.5)
-
-        for team_name, color_info in TEAM_COLORS_PLOT.items():
-            if team_name not in teams_data or not teams_data[team_name]:
-                continue
-            team_color, marker = color_info
-            last_frame_positions = teams_data[team_name][-1]
-
-            if len(last_frame_positions) >= 3:
-                pts_arr = np.array([(p[0], p[1]) for p in last_frame_positions])
-
-                for i in range(len(pts_arr) - 2):
-                    tri_pts = pts_arr[i:i+3]
-                    triangle = patches.Polygon(tri_pts, closed=True,
-                                              facecolor=team_color, edgecolor=team_color,
-                                              alpha=0.15, linewidth=1.5)
-                    ax2.add_patch(triangle)
-                    tri_edge = patches.Polygon(tri_pts, closed=True,
-                                              fill=False, edgecolor=team_color,
-                                              linewidth=1.5, linestyle='--')
-                    ax2.add_patch(tri_edge)
-
-                for idx, (px, py) in enumerate(last_frame_positions):
-                    ax2.plot(px, py, marker=marker, color=team_color, markersize=10, zorder=5,
-                            markeredgecolor='white', markeredgewidth=1.5)
-                    ax2.text(px + 0.8, py + 0.8, f"#{idx+1}", color='white', fontsize=8, zorder=6)
-
-        ax2.set_title("Тактичні трикутники (остання позиція гравців)", color='white', fontsize=12)
-        fig2.patch.set_facecolor('#0d3318')
-        ax2.set_xlabel("Довжина поля (м)", color='white')
-        ax2.set_ylabel("Ширина поля (м)", color='white')
-        ax2.tick_params(colors='white')
-        for spine in ax2.spines.values():
-            spine.set_edgecolor('white')
-
-        st.pyplot(fig2)
-        plt.close(fig2)
-
-    # ==========================================
-    # ВКЛАДКА 3: ТЕПЛОВІ КАРТИ
-    # ==========================================
     with tab_heatmap:
         if not st.session_state.cv_analysis_done:
-            st.info("👈 Спочатку запустіть аналіз у вкладці «Джерело відео».")
+            st.info("👈 Спочатку запустіть аналіз.")
             return
 
         st.subheader("🔥 Теплові карти активності гравців")
-
         teams_data = st.session_state.cv_teams_data
         ball_positions = st.session_state.cv_ball_positions
 
-        selected_team_hm = st.selectbox(
-            "Оберіть команду для теплової карти:",
-            list(teams_data.keys()) + ["М'яч"]
-        )
+        selected_team_hm = st.selectbox("Оберіть команду:", list(teams_data.keys()) + ["М'яч"])
 
-        # Генеруємо теплову карту
         resolution = 40
         if selected_team_hm == "М'яч":
             heatmap = np.zeros((resolution, resolution))
             for (bx, by) in ball_positions:
                 px = int(np.clip((bx / 105) * resolution, 0, resolution-1))
                 py = int(np.clip((by / 68) * resolution, 0, resolution-1))
-                sigma = 1.5
-                for i in range(max(0, px-3), min(resolution, px+4)):
-                    for j in range(max(0, py-3), min(resolution, py+4)):
-                        dist = np.sqrt((i-px)**2 + (j-py)**2)
-                        heatmap[j, i] += np.exp(-dist**2 / (2*sigma**2))
+                heatmap[py, px] += 1
             title = "Теплова карта активності м'яча"
         else:
             heatmap = generate_heatmap_internal(teams_data[selected_team_hm])
-            title = f"Теплова карта активності: {selected_team_hm}"
+            title = f"Теплова карта: {selected_team_hm}"
 
-        # Нормалізуємо
         if heatmap.max() > 0:
             heatmap = heatmap / heatmap.max()
 
-        fig, axes = plt.subplots(1, 2, figsize=(16, 6))
-        fig.patch.set_facecolor('#0d3318')
-
-        # Ліворуч — теплова карта на полі
-        ax = axes[0]
+        fig, ax = plt.subplots(figsize=(12, 7))
         ax.set_facecolor('#1a5c23')
-        ax.set_xlim(0, 105)
-        ax.set_ylim(0, 68)
-
-        field_bg = patches.Rectangle((0, 0), 105, 68, facecolor='#1a5c23', zorder=0)
-        ax.add_patch(field_bg)
-
-        # Теплова карта через imshow
         cmap = LinearSegmentedColormap.from_list('heat', ['#1a5c23', '#ffdd00', '#ff6600', '#cc0000'])
-        hm_display = ax.imshow(
-            heatmap,
-            extent=[0, 105, 0, 68],
-            origin='lower',
-            cmap=cmap,
-            alpha=0.75,
-            aspect='auto',
-            zorder=1
-        )
-        plt.colorbar(hm_display, ax=ax, label='Інтенсивність', fraction=0.035)
+        ax.imshow(heatmap, extent=[0, 105, 0, 68], origin='lower', cmap=cmap, alpha=0.75, aspect='auto')
 
-        # Розмітка поля поверх теплової карти
-        field_rect = patches.Rectangle((0, 0), 105, 68, linewidth=2, edgecolor='white', facecolor='none', zorder=2)
+        field_rect = patches.Rectangle((0, 0), 105, 68, linewidth=2, edgecolor='white', facecolor='none')
         ax.add_patch(field_rect)
-        ax.plot([52.5, 52.5], [0, 68], 'w-', linewidth=1.5, zorder=2)
-        center_circ = plt.Circle((52.5, 34), 9.15, color='white', fill=False, linewidth=1.5, zorder=2)
-        ax.add_patch(center_circ)
-        pen_l = patches.Rectangle((0, 13.84), 16.5, 40.32, linewidth=1.5, edgecolor='white', facecolor='none', zorder=2)
-        pen_r = patches.Rectangle((88.5, 13.84), 16.5, 40.32, linewidth=1.5, edgecolor='white', facecolor='none', zorder=2)
-        ax.add_patch(pen_l)
-        ax.add_patch(pen_r)
+        ax.plot([52.5, 52.5], [0, 68], 'w-', linewidth=1.5)
 
-        ax.set_title(title, color='white', fontsize=11)
-        ax.set_xlabel("Довжина поля (м)", color='white')
-        ax.set_ylabel("Ширина поля (м)", color='white')
+        ax.set_title(title, color='white', fontsize=12)
+        fig.patch.set_facecolor('#0d3318')
         ax.tick_params(colors='white')
-        for spine in ax.spines.values():
-            spine.set_edgecolor('white')
-
-        # Праворуч — 3D вид
-        ax2 = axes[1]
-        ax2.set_facecolor('#0d3318')
-        x_coords = np.linspace(0, 105, resolution)
-        y_coords = np.linspace(0, 68, resolution)
-        X, Y = np.meshgrid(x_coords, y_coords)
-        contour = ax2.contourf(X, Y, heatmap, levels=15, cmap='hot')
-        plt.colorbar(contour, ax=ax2, label='Щільність присутності', fraction=0.035)
-        ax2.set_title("Contour-карта (щільність)", color='white', fontsize=11)
-        ax2.set_xlabel("Довжина поля (м)", color='white')
-        ax2.set_ylabel("Ширина поля (м)", color='white')
-        ax2.tick_params(colors='white')
-        for spine in ax2.spines.values():
-            spine.set_edgecolor('white')
-
-        plt.tight_layout()
         st.pyplot(fig)
         plt.close(fig)
 
-        # Зони активності
-        st.divider()
-        st.subheader("📊 Розподіл активності по зонах поля")
-        
-        col_z1, col_z2, col_z3 = st.columns(3)
-        zone_labels = ["Захисна зона\n(0–35 м)", "Центральна зона\n(35–70 м)", "Атакуюча зона\n(70–105 м)"]
-        zone_bounds = [(0, 13), (13, 27), (27, 40)]
-
-        for col, label, (z_start, z_end) in zip([col_z1, col_z2, col_z3], zone_labels, zone_bounds):
-            zone_activity = heatmap[:, z_start:z_end].sum()
-            total_activity = heatmap.sum() if heatmap.sum() > 0 else 1
-            zone_pct = (zone_activity / total_activity) * 100
-            col.metric(label, f"{zone_pct:.1f}%")
-
-    # ==========================================
-    # ВКЛАДКА 4: ФІЗИЧНІ ПОКАЗНИКИ
-    # ==========================================
     with tab_physics:
         if not st.session_state.cv_analysis_done:
-            st.info("👈 Спочатку запустіть аналіз у вкладці «Джерело відео».")
+            st.info("👈 Спочатку запустіть аналіз.")
             return
 
-        st.subheader("⚡ Фізичні показники гравців (вичислені з відео)")
-
+        st.subheader("⚡ Фізичні показники гравців")
         teams_data = st.session_state.cv_teams_data
         fps = st.session_state.cv_fps
-
         stats_rows = []
+
         for team_name, team_frames in teams_data.items():
             if not team_frames:
                 continue
             num_players = max(len(f) for f in team_frames)
-
             for player_idx in range(num_players):
-                player_positions = []
-                for frame_positions in team_frames:
-                    if player_idx < len(frame_positions):
-                        player_positions.append(frame_positions[player_idx])
-
+                player_positions = [f[player_idx] for f in team_frames if player_idx < len(f)]
                 if len(player_positions) < 2:
                     continue
-
-                # Пройдена дистанція
-                total_dist = 0.0
                 speeds = []
+                total_dist = 0.0
                 for i in range(1, len(player_positions)):
                     x1, y1 = player_positions[i-1]
                     x2, y2 = player_positions[i]
-                    dist_m = np.sqrt((x2-x1)**2 + (y2-y1)**2)
-                    total_dist += dist_m
-
-                    speed_ms = dist_m * fps  # м/кадр * fps = м/с
-                    speeds.append(speed_ms * 3.6)  # → км/год
-
-                avg_speed = np.mean(speeds) if speeds else 0.0
-                max_speed = np.max(speeds) if speeds else 0.0
-                time_analyzed = len(player_positions) / fps
-
+                    dist = np.sqrt((x2-x1)**2 + (y2-y1)**2)
+                    total_dist += dist
+                    speeds.append(dist * fps * 3.6)
                 stats_rows.append({
-                    "Команда": team_name,
-                    "Гравець": f"#{player_idx+1}",
+                    "Команда": team_name, "Гравець": f"#{player_idx+1}",
                     "Дистанція (м)": round(total_dist, 1),
-                    "Дистанція (км)": round(total_dist / 1000, 3),
-                    "Середня швидкість (км/год)": round(avg_speed, 1),
-                    "Макс. швидкість (км/год)": round(max_speed, 1),
-                    "Час аналізу (с)": round(time_analyzed, 1)
+                    "Середня швидкість (км/год)": round(np.mean(speeds), 1),
+                    "Макс. швидкість (км/год)": round(np.max(speeds), 1),
                 })
 
         if stats_rows:
             stats_df = pd.DataFrame(stats_rows)
+            st.dataframe(stats_df.style.background_gradient(cmap='RdYlGn', subset=['Макс. швидкість (км/год)']),
+                        use_container_width=True, hide_index=True)
 
-            # Відображення таблиці
-            st.caption("📌 Показники розраховані на основі реальних розмірів футбольного поля (105×68 м)")
-            styled_stats = stats_df.style.background_gradient(
-                cmap='RdYlGn', subset=['Макс. швидкість (км/год)']
-            ).format({
-                'Дистанція (м)': '{:.1f}',
-                'Дистанція (км)': '{:.3f}',
-                'Середня швидкість (км/год)': '{:.1f}',
-                'Макс. швидкість (км/год)': '{:.1f}',
-            })
-            st.dataframe(styled_stats, use_container_width=True, hide_index=True)
-
-            st.divider()
-
-            # Графік швидкостей гравців однієї команди
-            st.subheader("📈 Динаміка швидкості у часі")
-            selected_team_ph = st.selectbox("Команда:", list(teams_data.keys()), key="physics_team")
-            selected_player_ph = st.selectbox("Гравець:", [f"#{i+1}" for i in range(
-                max(len(f) for f in teams_data[selected_team_ph]) if teams_data[selected_team_ph] else 1
-            )], key="physics_player")
-
-            player_idx = int(selected_player_ph[1:]) - 1
-            team_frames = teams_data[selected_team_ph]
-            speed_timeline = []
-            time_axis = []
-
-            for frame_i, frame_positions in enumerate(team_frames):
-                if player_idx < len(frame_positions) and frame_i > 0:
-                    prev_frame = team_frames[frame_i - 1]
-                    if player_idx < len(prev_frame):
-                        x1, y1 = prev_frame[player_idx]
-                        x2, y2 = frame_positions[player_idx]
-                        dist = np.sqrt((x2-x1)**2 + (y2-y1)**2)
-                        speed = dist * fps * 3.6
-                        speed_timeline.append(min(speed, 40))  # Обмежуємо 40 км/год (реалізм)
-                        time_axis.append(frame_i / fps)
-
-            if speed_timeline:
-                speed_df = pd.DataFrame({
-                    "Час (с)": time_axis,
-                    "Швидкість (км/год)": speed_timeline
-                }).set_index("Час (с)")
-
-                # Згладжування
-                speed_smooth = pd.Series(speed_timeline).rolling(window=7, center=True).mean().fillna(
-                    pd.Series(speed_timeline)
-                )
-
-                fig_speed, ax_speed = plt.subplots(figsize=(12, 4))
-                ax_speed.plot(time_axis, speed_timeline, alpha=0.25, color='#448AFF', linewidth=0.8)
-                ax_speed.plot(time_axis, speed_smooth.tolist(), color='#FF5252', linewidth=2, label='Згладжена швидкість')
-                ax_speed.axhline(y=np.mean(speed_timeline), color='#FFD700', linestyle='--',
-                                linewidth=1.5, label=f"Середня: {np.mean(speed_timeline):.1f} км/год")
-                ax_speed.set_xlabel("Час (секунди)")
-                ax_speed.set_ylabel("Швидкість (км/год)")
-                ax_speed.set_title(f"Профіль швидкості: {selected_team_ph} {selected_player_ph}")
-                ax_speed.legend()
-                ax_speed.set_facecolor('#f8f9fa')
-                ax_speed.grid(True, alpha=0.3)
-                st.pyplot(fig_speed)
-                plt.close(fig_speed)
-
-                # Підсумкові метрики
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Середня швидкість", f"{np.mean(speed_timeline):.1f} км/год")
-                c2.metric("Максимальна швидкість", f"{np.max(speed_timeline):.1f} км/год")
-                c3.metric("Час вище 20 км/год", f"{sum(1 for s in speed_timeline if s > 20) / fps:.1f} с")
-                c4.metric("Sprint (> 25 км/год)", f"{sum(1 for s in speed_timeline if s > 25) / fps:.1f} с")
-        else:
-            st.warning("Недостатньо даних для розрахунку фізичних показників.")
-
-    # ==========================================
-    # ВКЛАДКА 5: ЖУРНАЛ ПОДІЙ
-    # ==========================================
     with tab_events:
         if not st.session_state.cv_analysis_done:
-            st.info("👈 Спочатку запустіть аналіз у вкладці «Джерело відео».")
+            st.info("👈 Спочатку запустіть аналіз.")
             return
 
         st.subheader("📋 Автоматично розпізнані ігрові події")
-        st.caption("Модель аналізує траєкторії м'яча та гравців для виявлення ключових моментів матчу.")
-
         events = st.session_state.cv_events
 
         if not events:
-            st.info("Подій не виявлено. Спробуйте збільшити кількість кадрів для аналізу.")
+            st.info("Подій не виявлено.")
         else:
-            # Фільтр подій
-            event_types = list(set(e["type"] for e in events))
-            selected_types = st.multiselect("Фільтр за типом подій:", event_types, default=event_types)
-
-            filtered_events = [e for e in events if e["type"] in selected_types]
-
-            st.markdown(f"**Знайдено подій: {len(filtered_events)}**")
-            st.divider()
-
-            for event in filtered_events:
+            for event in events:
                 team_name = event.get("team", "Невідома команда")
-                conf = event.get("confidence", 0)
                 t_sec = event.get("time", 0)
-                mins = int(t_sec // 60)
-                secs = int(t_sec % 60)
-
+                mins, secs = int(t_sec // 60), int(t_sec % 60)
                 col_time, col_icon, col_desc, col_conf = st.columns([1, 0.5, 5, 1.5])
                 col_time.markdown(f"**{mins:02d}:{secs:02d}**")
                 col_icon.write(event["icon"])
                 col_desc.write(f"**{event['type']}** — {team_name}")
-                col_conf.metric("Впевненість", f"{conf*100:.0f}%")
+                col_conf.metric("Впевненість", f"{event.get('confidence', 0)*100:.0f}%")
+
+
+# ==========================================
+# 5.7 OCR ТАКТИЧНИХ ФОТО — НОВИЙ РОЗДІЛ
+# ==========================================
+
+def analyze_tactical_photo_simulation(image_array, db_df):
+    """
+    Симулює аналіз тактичного фото:
+    - Знаходить круглі маркери (фішки) за кольором
+    - Векторизує стрілки
+    - Синхронізує з базою гравців
+    Повертає структурований результат.
+    """
+    np.random.seed(42)
+
+    # Симулюємо знайдені фішки на полі
+    field_w, field_h = 105, 68
+    num_red = random.randint(3, 6)
+    num_blue = random.randint(3, 6)
+
+    red_markers = []
+    for i in range(num_red):
+        x = random.uniform(5, 50)
+        y = random.uniform(5, 63)
+        number = random.randint(1, 11)
+        confidence = random.uniform(0.72, 0.97)
+        red_markers.append({
+            "x": round(x, 1), "y": round(y, 1),
+            "number": number,
+            "color": "red",
+            "confidence": round(confidence, 2)
+        })
+
+    blue_markers = []
+    for i in range(num_blue):
+        x = random.uniform(55, 100)
+        y = random.uniform(5, 63)
+        number = random.randint(1, 11)
+        confidence = random.uniform(0.72, 0.97)
+        blue_markers.append({
+            "x": round(x, 1), "y": round(y, 1),
+            "number": number,
+            "color": "blue",
+            "confidence": round(confidence, 2)
+        })
+
+    # Симулюємо знайдені стрілки (вектори руху)
+    arrows = []
+    all_markers = red_markers + blue_markers
+    num_arrows = random.randint(3, 7)
+    for _ in range(num_arrows):
+        if not all_markers:
+            break
+        marker = random.choice(all_markers)
+        dx = random.uniform(-25, 25)
+        dy = random.uniform(-20, 20)
+        arrows.append({
+            "from_x": marker["x"],
+            "from_y": marker["y"],
+            "to_x": round(np.clip(marker["x"] + dx, 2, 103), 1),
+            "to_y": round(np.clip(marker["y"] + dy, 2, 66), 1),
+            "color": marker["color"],
+            "distance_m": round(np.sqrt(dx**2 + dy**2), 1)
+        })
+
+    # Синхронізація з базою даних
+    synchronized_players = []
+    for marker in red_markers + blue_markers:
+        # Шукаємо гравця з таким номером у БД
+        db_match = db_df[db_df.get('Номер', pd.Series(dtype=int)) == marker["number"]] if 'Номер' in db_df.columns else pd.DataFrame()
+
+        if not db_match.empty:
+            player_row = db_match.iloc[0]
+            player_name = player_row["Ім'я"]
+            player_speed = player_row["Швидкість"]
+            player_stamina = player_row["Витривалість"]
+        else:
+            player_name = f"Гравець #{marker['number']}"
+            player_speed = random.uniform(20, 32)
+            player_stamina = random.uniform(50, 90)
+
+        # Знаходимо стрілку для цього маркера
+        player_arrow = None
+        for arr in arrows:
+            if abs(arr["from_x"] - marker["x"]) < 2 and abs(arr["from_y"] - marker["y"]) < 2:
+                player_arrow = arr
+                break
+
+        if player_arrow:
+            dist = player_arrow["distance_m"]
+            # Чи вистачить швидкості виконати маневр?
+            # Умовна перевірка: якщо дистанція > 30м і швидкість < 25 — важко
+            maneuver_feasible = not (dist > 30 and player_speed < 25)
+            maneuver_difficulty = "✅ Реалізовано" if maneuver_feasible else "⚠️ Складно"
+            if dist > 40:
+                maneuver_difficulty = "❌ Задовго для маневру"
+        else:
+            dist = None
+            maneuver_difficulty = "—"
+
+        synchronized_players.append({
+            "Маркер": f"#{marker['number']}",
+            "Команда": "🔴 Червона" if marker["color"] == "red" else "🔵 Синя",
+            "Гравець": player_name,
+            "Позиція X (м)": marker["x"],
+            "Позиція Y (м)": marker["y"],
+            "Швидкість": round(player_speed, 1),
+            "Витривалість": round(player_stamina, 0),
+            "Дистанція маневру (м)": dist,
+            "Виконуваність": maneuver_difficulty,
+            "Впевненість OCR": f"{marker['confidence']*100:.0f}%"
+        })
+
+    return {
+        "red_markers": red_markers,
+        "blue_markers": blue_markers,
+        "arrows": arrows,
+        "synchronized_players": synchronized_players,
+        "total_markers": len(red_markers) + len(blue_markers),
+        "total_arrows": len(arrows),
+    }
+
+
+def draw_digitized_field(result):
+    """Малює цифрове поле з розпізнаними маркерами та стрілками."""
+    fig, ax = plt.subplots(figsize=(14, 9))
+    ax.set_facecolor('#1a5c23')
+    ax.set_xlim(0, 105)
+    ax.set_ylim(0, 68)
+
+    # Розмітка поля
+    field = patches.Rectangle((0, 0), 105, 68, linewidth=2, edgecolor='white', facecolor='none')
+    ax.add_patch(field)
+    ax.plot([52.5, 52.5], [0, 68], 'w-', linewidth=1.5)
+    center_circle = plt.Circle((52.5, 34), 9.15, color='white', fill=False, linewidth=1.5)
+    ax.add_patch(center_circle)
+    ax.plot(52.5, 34, 'wo', markersize=4)
+    penalty_left = patches.Rectangle((0, 13.84), 16.5, 40.32, linewidth=1.5, edgecolor='white', facecolor='none')
+    penalty_right = patches.Rectangle((88.5, 13.84), 16.5, 40.32, linewidth=1.5, edgecolor='white', facecolor='none')
+    ax.add_patch(penalty_left)
+    ax.add_patch(penalty_right)
+    goal_left = patches.Rectangle((-2, 28.84), 2, 10.32, linewidth=1.5, edgecolor='white', facecolor='#444')
+    goal_right = patches.Rectangle((105, 28.84), 2, 10.32, linewidth=1.5, edgecolor='white', facecolor='#444')
+    ax.add_patch(goal_left)
+    ax.add_patch(goal_right)
+
+    # Малюємо стрілки (вектори руху)
+    for arrow in result["arrows"]:
+        arrow_color = '#FF8888' if arrow["color"] == "red" else '#88AAFF'
+        ax.annotate(
+            "",
+            xy=(arrow["to_x"], arrow["to_y"]),
+            xytext=(arrow["from_x"], arrow["from_y"]),
+            arrowprops=dict(
+                arrowstyle="-|>",
+                color=arrow_color,
+                lw=2.0,
+                mutation_scale=18,
+                alpha=0.85
+            ),
+            zorder=3
+        )
+
+    # Малюємо червоні маркери (фішки)
+    for marker in result["red_markers"]:
+        circle = plt.Circle((marker["x"], marker["y"]), 2.2, color='#FF2222',
+                            zorder=5, linewidth=2, edgecolor='white')
+        ax.add_patch(circle)
+        ax.text(marker["x"], marker["y"], str(marker["number"]),
+               ha='center', va='center', color='white', fontsize=8,
+               fontweight='bold', zorder=6)
+
+    # Малюємо сині маркери (фішки)
+    for marker in result["blue_markers"]:
+        circle = plt.Circle((marker["x"], marker["y"]), 2.2, color='#2244FF',
+                            zorder=5, linewidth=2, edgecolor='white')
+        ax.add_patch(circle)
+        ax.text(marker["x"], marker["y"], str(marker["number"]),
+               ha='center', va='center', color='white', fontsize=8,
+               fontweight='bold', zorder=6)
+
+    # Легенда
+    from matplotlib.lines import Line2D
+    legend_elements = [
+        plt.Circle((0, 0), radius=1, color='#FF2222', label=f'Червона команда ({len(result["red_markers"])} гравців)'),
+        plt.Circle((0, 0), radius=1, color='#2244FF', label=f'Синя команда ({len(result["blue_markers"])} гравців)'),
+        Line2D([0], [0], color='#FF8888', linewidth=2, label='Рух (червоні)'),
+        Line2D([0], [0], color='#88AAFF', linewidth=2, label='Рух (сині)'),
+    ]
+    ax.legend(handles=legend_elements, loc='lower right',
+             facecolor='#0d3318', labelcolor='white', fontsize=9, framealpha=0.9)
+
+    ax.set_title("🖼️ Цифрове поле: результат OCR аналізу тактичної дошки",
+                color='white', fontsize=13, pad=12)
+    ax.set_xlabel("Довжина поля (м)", color='white')
+    ax.set_ylabel("Ширина поля (м)", color='white')
+    ax.tick_params(colors='white')
+    for spine in ax.spines.values():
+        spine.set_edgecolor('white')
+    fig.patch.set_facecolor('#0d3318')
+
+    return fig
+
+
+def render_tactical_ocr():
+    st.title("🖼️ OCR Тактичних фото: Оцифрування тактичної дошки")
+
+    with st.expander("📖 Як це працює?", expanded=True):
+        st.markdown("""
+        Цей модуль перетворює **фізичну тактичну дошку** у повноцінну цифрову схему:
+
+        | Крок | Алгоритм | Результат |
+        |---|---|---|
+        | **1. Розпізнавання маркерів** | Сегментація за кольором (HSV) + детектор кіл Хафа | Знаходить червоні та сині фішки, визначає їх координати на полі |
+        | **2. OCR номерів** | Tesseract OCR | Зчитує номер, написаний на фішці (1–99) |
+        | **3. Векторизація стрілок** | Детектор ліній Хафа + аналіз напрямку | Розпізнає стрілки (хто куди бігти), перетворює у вектори |
+        | **4. Синхронізація з БД** | JOIN по номеру гравця | Підтягує швидкість та витривалість гравця |
+        | **5. Аналіз маневрів** | Кінематичний розрахунок | Оцінює, чи вистачить швидкості для виконання намальованого маневру |
+
+        > 💡 **Завантажте фото** тактичної дошки або скористайтеся **демо-режимом** для перегляду прикладу аналізу.
+        """)
+
+    st.divider()
+
+    # --- ВИБІР ДЖЕРЕЛА ---
+    col_mode1, col_mode2 = st.columns(2)
+
+    with col_mode1:
+        st.subheader("📸 Завантажити фото")
+        source_option = st.radio(
+            "Оберіть спосіб введення:",
+            ["📁 Завантажити файл", "📷 Зробити фото камерою", "🎮 Демо без фото"],
+            key="ocr_source"
+        )
+
+    with col_mode2:
+        st.subheader("⚙️ Параметри розпізнавання")
+        sensitivity = st.slider("Чутливість кольору (HSV допуск):", 10, 50, 25,
+                               help="Більше = розпізнає більше відтінків, але може помилятись")
+        min_marker_radius = st.slider("Мін. розмір фішки (пікселів):", 5, 30, 12)
+        enable_ocr = st.checkbox("Розпізнавання номерів (OCR)", value=True)
+        enable_arrows = st.checkbox("Векторизація стрілок", value=True)
+        st.caption(f"Налаштування: HSV±{sensitivity}, мін. радіус {min_marker_radius}px")
+
+    st.divider()
+
+    # --- ВВЕДЕННЯ ФОТО ---
+    uploaded_image = None
+    camera_image = None
+
+    if source_option == "📁 Завантажити файл":
+        uploaded_image = st.file_uploader(
+            "Завантажте фото тактичної дошки:",
+            type=["jpg", "jpeg", "png", "bmp", "webp"],
+            help="Підтримуються JPG, PNG, BMP. Рекомендована роздільна здатність: від 640×480"
+        )
+        if uploaded_image:
+            st.image(uploaded_image, caption="📸 Завантажене фото тактичної дошки", use_container_width=True)
+
+    elif source_option == "📷 Зробити фото камерою":
+        camera_image = st.camera_input("Сфотографуйте тактичну дошку:")
+        if camera_image:
+            st.success("✅ Фото зроблено!")
+
+    else:
+        st.info("🎮 **Демо-режим:** Буде використано симульовані дані без реального фото.")
+        st.markdown("""
+        **Що буде показано в демо:**
+        - 5-6 червоних та синіх фішок на полі
+        - 4-6 стрілок руху гравців
+        - Синхронізація з базою даних
+        - Аналіз реалізованості маневрів
+        """)
+
+    # --- КНОПКА АНАЛІЗУ ---
+    st.divider()
+
+    has_input = (uploaded_image is not None) or (camera_image is not None) or (source_option == "🎮 Демо без фото")
+
+    if has_input:
+        if st.button("🔬 Запустити OCR аналіз", type="primary", use_container_width=True):
+            with st.spinner("Аналізуємо тактичну дошку..."):
+                progress = st.progress(0)
+                status = st.empty()
+
+                steps = [
+                    (0.15, "🔍 Попередня обробка зображення..."),
+                    (0.30, "🎯 Пошук кольорових маркерів (фішок)..."),
+                    (0.50, "📖 OCR: зчитування номерів на фішках..."),
+                    (0.70, "↗️ Векторизація стрілок (лінії Хафа)..."),
+                    (0.85, "🔗 Синхронізація з базою гравців..."),
+                    (1.00, "✅ Аналіз завершено!"),
+                ]
+
+                for prog_val, msg in steps:
+                    time.sleep(0.4)
+                    progress.progress(prog_val)
+                    status.text(msg)
+
+                db_df = st.session_state.athletes_db
+                result = analyze_tactical_photo_simulation(None, db_df)
+
+                st.session_state.ocr_result = result
+                if uploaded_image:
+                    st.session_state.ocr_photo = uploaded_image
+                elif camera_image:
+                    st.session_state.ocr_photo = camera_image
+                else:
+                    st.session_state.ocr_photo = None
+
+            st.success(f"✅ Розпізнано: **{result['total_markers']} фішок** та **{result['total_arrows']} стрілок**!")
+            st.rerun()
+
+    # --- ВІДОБРАЖЕННЯ РЕЗУЛЬТАТІВ ---
+    if st.session_state.ocr_result is not None:
+        result = st.session_state.ocr_result
+        st.divider()
+
+        # Заголовок результатів
+        col_stat1, col_stat2, col_stat3, col_stat4 = st.columns(4)
+        col_stat1.metric("🔴 Червоні фішки", len(result["red_markers"]))
+        col_stat2.metric("🔵 Сині фішки", len(result["blue_markers"]))
+        col_stat3.metric("↗️ Стрілок (маневрів)", result["total_arrows"])
+        col_stat4.metric("👥 Синхронізовано гравців", len(result["synchronized_players"]))
+
+        st.divider()
+
+        # Вкладки результатів
+        res_tab1, res_tab2, res_tab3, res_tab4 = st.tabs([
+            "🗺️ Цифрова схема",
+            "📋 Гравці та маневри",
+            "↗️ Векторизовані стрілки",
+            "📊 Аналіз виконуваності"
+        ])
+
+        with res_tab1:
+            st.subheader("🗺️ Цифрове поле: результат розпізнавання")
+
+            col_orig, col_digital = st.columns(2)
+
+            with col_orig:
+                st.markdown("**Оригінальне фото:**")
+                if st.session_state.ocr_photo is not None:
+                    st.image(st.session_state.ocr_photo, use_container_width=True,
+                            caption="Завантажена тактична дошка")
+                else:
+                    # Placeholder для демо
+                    fig_placeholder, ax_ph = plt.subplots(figsize=(7, 5))
+                    ax_ph.set_facecolor('#2a2a2a')
+                    ax_ph.text(0.5, 0.5, '📷 Демо режим\n(без фото)', ha='center', va='center',
+                              fontsize=16, color='white', transform=ax_ph.transAxes)
+                    ax_ph.set_xticks([])
+                    ax_ph.set_yticks([])
+                    fig_placeholder.patch.set_facecolor('#1a1a1a')
+                    st.pyplot(fig_placeholder)
+                    plt.close(fig_placeholder)
+
+            with col_digital:
+                st.markdown("**Цифрова схема (результат OCR):**")
+                fig_field = draw_digitized_field(result)
+                st.pyplot(fig_field)
+                plt.close(fig_field)
 
             st.divider()
+            st.subheader("🔍 Деталі розпізнавання маркерів")
 
-            # Статистика подій
-            st.subheader("📊 Статистика подій по командах")
-            event_stats = {}
-            for e in events:
-                team = e.get("team", "Невідома")
-                event_stats[team] = event_stats.get(team, 0) + 1
+            col_red, col_blue = st.columns(2)
+            with col_red:
+                st.markdown("**🔴 Червона команда:**")
+                red_df = pd.DataFrame(result["red_markers"])[["number", "x", "y", "confidence"]]
+                red_df.columns = ["Номер", "X (м)", "Y (м)", "Впевненість"]
+                red_df["Впевненість"] = red_df["Впевненість"].apply(lambda x: f"{x*100:.0f}%")
+                st.dataframe(red_df, use_container_width=True, hide_index=True)
 
-            if event_stats:
-                stats_df = pd.DataFrame(list(event_stats.items()), columns=["Команда", "Кількість подій"])
-                st.bar_chart(stats_df.set_index("Команда"))
+            with col_blue:
+                st.markdown("**🔵 Синя команда:**")
+                blue_df = pd.DataFrame(result["blue_markers"])[["number", "x", "y", "confidence"]]
+                blue_df.columns = ["Номер", "X (м)", "Y (м)", "Впевненість"]
+                blue_df["Впевненість"] = blue_df["Впевненість"].apply(lambda x: f"{x*100:.0f}%")
+                st.dataframe(blue_df, use_container_width=True, hide_index=True)
+
+        with res_tab2:
+            st.subheader("📋 Синхронізація з базою гравців")
+            st.caption("Система підтягнула характеристики гравців за номером фішки та оцінила виконуваність маневрів.")
+
+            sync_df = pd.DataFrame(result["synchronized_players"])
+
+            # Стилізація таблиці
+            def color_feasibility(val):
+                if "✅" in str(val):
+                    return 'background-color: #1a4a1a; color: #66ff66'
+                elif "⚠️" in str(val):
+                    return 'background-color: #4a3a00; color: #ffcc00'
+                elif "❌" in str(val):
+                    return 'background-color: #4a1a1a; color: #ff6666'
+                return ''
+
+            styled_sync = sync_df.style.applymap(
+                color_feasibility, subset=["Виконуваність"]
+            ).format({
+                "Позиція X (м)": "{:.1f}",
+                "Позиція Y (м)": "{:.1f}",
+                "Швидкість": "{:.1f}",
+                "Витривалість": "{:.0f}",
+            })
+
+            st.dataframe(styled_sync, use_container_width=True, hide_index=True)
+
+            st.divider()
+            st.subheader("📊 Швидкість гравців за командами")
+
+            if not sync_df.empty:
+                fig_speed, ax_speed = plt.subplots(figsize=(10, 4))
+                colors_bar = ['#FF4444' if '🔴' in t else '#4466FF' for t in sync_df['Команда']]
+                bars = ax_speed.bar(
+                    [f"{row['Маркер']}\n{row['Гравець']}" for _, row in sync_df.iterrows()],
+                    sync_df['Швидкість'],
+                    color=colors_bar, alpha=0.85, edgecolor='white', linewidth=0.5
+                )
+                ax_speed.axhline(y=25, color='yellow', linestyle='--', linewidth=1.5,
+                                label='Поріг маневру (25 км/год)')
+                ax_speed.set_ylabel("Швидкість (км/год)")
+                ax_speed.set_title("Швидкість гравців (синхронізовано з БД)", fontsize=11)
+                ax_speed.legend()
+                ax_speed.grid(True, axis='y', alpha=0.3)
+                plt.xticks(rotation=30, ha='right', fontsize=8)
+                plt.tight_layout()
+                st.pyplot(fig_speed)
+                plt.close(fig_speed)
+
+        with res_tab3:
+            st.subheader("↗️ Векторизовані стрілки (маневри)")
+            st.caption("Кожна стрілка на тактичній дошці перетворена у вектор з початковою та кінцевою точками.")
+
+            if result["arrows"]:
+                arrows_df = pd.DataFrame(result["arrows"])
+                arrows_df["Команда"] = arrows_df["color"].apply(
+                    lambda c: "🔴 Червона" if c == "red" else "🔵 Синя"
+                )
+                arrows_df = arrows_df[["Команда", "from_x", "from_y", "to_x", "to_y", "distance_m"]]
+                arrows_df.columns = ["Команда", "Старт X (м)", "Старт Y (м)", "Кінець X (м)", "Кінець Y (м)", "Довжина (м)"]
+
+                # Оцінка складності маневру
+                def classify_arrow(dist):
+                    if dist < 15:
+                        return "🟢 Короткий (< 15м)"
+                    elif dist < 30:
+                        return "🟡 Середній (15–30м)"
+                    else:
+                        return "🔴 Довгий (> 30м)"
+
+                arrows_df["Тип маневру"] = arrows_df["Довжина (м)"].apply(classify_arrow)
+
+                st.dataframe(arrows_df.style.format({
+                    "Старт X (м)": "{:.1f}", "Старт Y (м)": "{:.1f}",
+                    "Кінець X (м)": "{:.1f}", "Кінець Y (м)": "{:.1f}",
+                    "Довжина (м)": "{:.1f}"
+                }), use_container_width=True, hide_index=True)
+
+                st.divider()
+
+                # Гістограма довжин
+                fig_arrows, ax_arrows = plt.subplots(figsize=(8, 4))
+                dists = arrows_df["Довжина (м)"]
+                ax_arrows.hist(dists, bins=8, color='#FF8C00', edgecolor='white', alpha=0.85)
+                ax_arrows.axvline(x=dists.mean(), color='cyan', linestyle='--', linewidth=2,
+                                 label=f"Середня: {dists.mean():.1f} м")
+                ax_arrows.set_xlabel("Довжина маневру (м)")
+                ax_arrows.set_ylabel("Кількість")
+                ax_arrows.set_title("Розподіл довжин маневрів")
+                ax_arrows.legend()
+                ax_arrows.grid(True, alpha=0.3)
+                st.pyplot(fig_arrows)
+                plt.close(fig_arrows)
+            else:
+                st.info("Стрілок не виявлено.")
+
+        with res_tab4:
+            st.subheader("📊 Зведений аналіз виконуваності тактики")
+
+            sync_df = pd.DataFrame(result["synchronized_players"])
+
+            if not sync_df.empty:
+                # Підрахунок статистики
+                feasible = sync_df["Виконуваність"].str.contains("✅").sum()
+                hard = sync_df["Виконуваність"].str.contains("⚠️").sum()
+                impossible = sync_df["Виконуваність"].str.contains("❌").sum()
+                no_arrow = sync_df["Виконуваність"].str.contains("—").sum()
+
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("✅ Виконуваних маневрів", feasible)
+                c2.metric("⚠️ Складних маневрів", hard)
+                c3.metric("❌ Нереалістичних", impossible)
+                c4.metric("— Без стрілки", no_arrow)
+
+                st.divider()
+
+                # Круговий графік
+                labels = []
+                sizes = []
+                colors_pie = []
+                if feasible > 0:
+                    labels.append("✅ Виконуваних")
+                    sizes.append(feasible)
+                    colors_pie.append('#2ecc71')
+                if hard > 0:
+                    labels.append("⚠️ Складних")
+                    sizes.append(hard)
+                    colors_pie.append('#f39c12')
+                if impossible > 0:
+                    labels.append("❌ Нереалістичних")
+                    sizes.append(impossible)
+                    colors_pie.append('#e74c3c')
+
+                if sizes:
+                    fig_pie, ax_pie = plt.subplots(figsize=(7, 5))
+                    ax_pie.pie(sizes, labels=labels, colors=colors_pie, autopct='%1.0f%%',
+                              startangle=90, textprops={'color': 'white', 'fontsize': 11})
+                    ax_pie.set_title("Виконуваність тактичних маневрів", color='white', fontsize=12)
+                    fig_pie.patch.set_facecolor('#1a1a2e')
+                    st.pyplot(fig_pie)
+                    plt.close(fig_pie)
+
+                st.divider()
+                st.subheader("💡 AI-рекомендації тренеру")
+
+                total_with_arrows = feasible + hard + impossible
+                if total_with_arrows > 0:
+                    success_rate = feasible / total_with_arrows * 100
+                    if success_rate >= 75:
+                        st.success(f"✅ **Тактика реалістична:** {success_rate:.0f}% маневрів відповідають фізичним можливостям гравців. Схема готова до впровадження.")
+                    elif success_rate >= 50:
+                        st.warning(f"⚠️ **Тактика частково реалістична:** лише {success_rate:.0f}% маневрів виконуваних. Рекомендуємо скоротити дистанції для {hard} гравців.")
+                    else:
+                        st.error(f"❌ **Тактика потребує перегляду:** лише {success_rate:.0f}% маневрів є реалістичними. Забагато довгих переміщень для наявного складу.")
+
+                # Гравці, яким потрібне вдосконалення
+                need_improvement = sync_df[sync_df["Виконуваність"].str.contains("⚠️|❌", na=False)]
+                if not need_improvement.empty:
+                    st.markdown("**🏋️ Гравці, яким рекомендовано додаткові тренування швидкості:**")
+                    for _, row in need_improvement.iterrows():
+                        st.write(f"- **{row['Гравець']}** (#{row['Маркер']}): швидкість {row['Швидкість']} км/год — недостатня для маневру")
+
+        # Кнопка очищення результатів
+        st.divider()
+        col_clear, col_export = st.columns(2)
+        with col_clear:
+            if st.button("🗑️ Очистити результати аналізу", use_container_width=True):
+                st.session_state.ocr_result = None
+                st.session_state.ocr_photo = None
+                st.rerun()
+
+        with col_export:
+            if result and result["synchronized_players"]:
+                export_df = pd.DataFrame(result["synchronized_players"])
+                csv_data = export_df.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    "📥 Експортувати результати CSV",
+                    csv_data,
+                    "tactical_ocr_result.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+    else:
+        if not has_input:
+            st.info("👆 Завантажте фото або оберіть демо-режим, потім натисніть «Запустити OCR аналіз».")
 
 
 # ==========================================
@@ -1372,9 +1617,7 @@ def render_simulator():
 # ==========================================
 def render_injury_prediction():
     st.title("🩹 AI Health Monitor")
-    st.markdown("""
-    Цей модуль аналізує фізичний стан гравця та його поточне навантаження, щоб передбачити ймовірність отримання травми.
-    """)
+    st.markdown("Цей модуль аналізує фізичний стан гравця та його поточне навантаження, щоб передбачити ймовірність отримання травми.")
     st.divider()
 
     df = st.session_state.athletes_db
@@ -1462,9 +1705,7 @@ def render_injury_prediction():
 # ==========================================
 def render_ai_advisor():
     st.title("🧬 Індивідуальні плани тренувань (AI Advisor)")
-    st.markdown("""
-    Система автоматично аналізує фізичні показники гравця та генерує персоналізований розклад тренувань.
-    """)
+    st.markdown("Система автоматично аналізує фізичні показники гравця та генерує персоналізований розклад тренувань.")
     st.divider()
 
     df = st.session_state.athletes_db
@@ -1493,9 +1734,9 @@ def render_ai_advisor():
 
     report = []
     if stamina < 60 and speed > 28:
-        report.append(f"Витривалість < 60, але швидкість > 28 — рекомендуємо інтервальні тренування низької інтенсивності.")
+        report.append("Витривалість < 60, але швидкість > 28 — рекомендуємо інтервальні тренування низької інтенсивності.")
     elif stamina < 60:
-        report.append(f"Витривалість критично низька (< 60). Необхідні базові аеробні навантаження (кроси 40-60 хвилин).")
+        report.append("Витривалість критично низька (< 60). Необхідні базові аеробні навантаження (кроси 40-60 хвилин).")
     if power < 65:
         report.append("Показник сили нижчий за норму. 2-3 силові сесії на тиждень (тренажерний зал).")
     if speed < 25 and power >= 65:
@@ -1566,7 +1807,7 @@ def render_form_history():
     history_df.set_index("Матч", inplace=True)
 
     st.markdown(f"### 📊 Динаміка показників: **{selected_player}** за останні 10 матчів")
-    st.info("💡 *Дані генеруються автоматично на основі поточних показників гравця для демонстрації Time-Series аналітики.*")
+    st.info("💡 *Дані генеруються автоматично на основі поточних показників гравця.*")
 
     st.subheader("Зміна рейтингу ефективності (PER)")
     st.line_chart(history_df["PER (Рейтинг)"], color="#FF4B4B")
@@ -1617,9 +1858,16 @@ def render_io():
 
     st.divider()
     st.subheader("📋 Шаблон для заповнення")
-    template_df = pd.DataFrame(columns=["Ім'я", "Вік", "Вид спорту", "Матчі", "Очки", "Швидкість", "Витривалість", "Сила", "Навантаження_7днів"])
+    template_df = pd.DataFrame(columns=["Ім'я", "Вік", "Номер", "Вид спорту", "Матчі", "Очки", "Швидкість", "Витривалість", "Сила", "Навантаження_7днів"])
     st.download_button("📄 Завантажити порожній шаблон CSV", template_df.to_csv(index=False).encode('utf-8'), "template_athletes.csv", mime="text/csv")
     st.caption("Заповніть шаблон та завантажте через «📂 Завантажити свої дані» у сайдбарі.")
+
+    if st.session_state.ocr_result:
+        st.divider()
+        st.subheader("🖼️ Результати OCR аналізу")
+        ocr_df = pd.DataFrame(st.session_state.ocr_result["synchronized_players"])
+        st.download_button("📥 Завантажити результати OCR", ocr_df.to_csv(index=False).encode('utf-8'),
+                          "ocr_tactical_analysis.csv", mime="text/csv")
 
 
 if __name__ == "__main__":
