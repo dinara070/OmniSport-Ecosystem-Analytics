@@ -32,14 +32,3 @@
 * **Математика та алгоритми:** NumPy (векторизація, розрахунки траєкторій)
 * **Робота з даними:** Pandas (DataFrame, агрегація, експорт)
 * **Візуалізація:** Matplotlib (Hexbin Heatmaps, Polar Radars, 2D Plots)
-
----
-
-## 🚀 Запуск проєкту локально
-
-Щоб розгорнути проєкт на своєму комп'ютері, виконайте наступні кроки:
-
-1. **Клонуйте репозиторій:**
-   ```bash
-   git clone [https://github.com/ВАШ_НІК/omnisport-pro.git](https://github.com/ВАШ_НІК/omnisport-pro.git)
-   cd omnisport-pro
