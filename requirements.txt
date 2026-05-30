@@ -2,4 +2,4 @@ streamlit
 pandas
 numpy
 matplotlib
-plotly
+opencv-python-headless
