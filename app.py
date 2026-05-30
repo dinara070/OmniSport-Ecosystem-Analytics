@@ -632,23 +632,32 @@ def render_team_analytics(df):
         }).set_index("Показник")
         st.bar_chart(avg_stats, color=["#448AFF", "#FF5252"])
 
-    # --- Нова функція: топ-3 і аутсайдери ---
+# --- Нова функція: топ-3 і аутсайдери ---
     st.divider()
     col_top, col_bot = st.columns(2)
+    
     with col_top:
         st.subheader("🏆 Топ-3 гравці за PER")
         st.caption("Найефективніші гравці команди за комплексним рейтингом.")
         top3 = df.nlargest(3, 'PER (Рейтинг)')[["Ім'я", "Вид спорту", "PER (Рейтинг)"]]
         for i, (_, row) in enumerate(top3.iterrows()):
             medals = ["🥇", "🥈", "🥉"]
-            st.write(f"{medals[i]} **{row[\"Ім'я\"]}** — {get_sport_emoji(row['Вид спорту'])} {row['Вид спорту']} — PER: **{row['PER (Рейтинг)']:.1f}**")
+            # Виносимо змінні, щоб уникнути конфлікту лапок
+            player_name = row["Ім'я"]
+            sport = row['Вид спорту']
+            per = row['PER (Рейтинг)']
+            st.write(f"{medals[i]} **{player_name}** — {get_sport_emoji(sport)} {sport} — PER: **{per:.1f}**")
 
     with col_bot:
         st.subheader("📈 Потенціал для росту")
         st.caption("Гравці з найнижчим PER — тут найбільший простір для розвитку.")
         bot3 = df.nsmallest(3, 'PER (Рейтинг)')[["Ім'я", "Вид спорту", "PER (Рейтинг)"]]
         for _, row in bot3.iterrows():
-            st.write(f"📌 **{row[\"Ім'я\"]}** — {get_sport_emoji(row['Вид спорту'])} — PER: **{row['PER (Рейтинг)']:.1f}**")
+            # Виносимо змінні, щоб уникнути конфлікту лапок
+            player_name = row["Ім'я"]
+            sport = row['Вид спорту']
+            per = row['PER (Рейтинг)']
+            st.write(f"📌 **{player_name}** — {get_sport_emoji(sport)} — PER: **{per:.1f}**")
 
     # --- Нова функція: середні показники за видами спорту ---
     st.divider()
