@@ -539,11 +539,18 @@ def render_dashboard(df):
                        ", ".join(low_stamina["Ім'я"].tolist()))
         else:
             st.success("✅ Витривалість усіх гравців в нормі")
+            
     with col_r3:
         top_per = df.loc[df['PER (Рейтинг)'].idxmax()]
         badge = get_performance_badge(top_per['PER (Рейтинг)'])
         sport_em = get_sport_emoji(top_per.get('Вид спорту', ''))
-        st.info(f"🏆 **Лідер команди:** {top_per[\"Ім'я\"]}\n\n{sport_em} {top_per.get('Вид спорту','')}\n\n{badge} PER: {top_per['PER (Рейтинг)']:.1f}")
+        
+        # Виносимо змінні окремо, щоб уникнути конфлікту лапок у f-рядку
+        leader_name = top_per["Ім'я"]
+        sport_type = top_per.get('Вид спорту', '')
+        per_score = top_per['PER (Рейтинг)']
+        
+        st.info(f"🏆 **Лідер команди:** {leader_name}\n\n{sport_em} {sport_type}\n\n{badge} PER: {per_score:.1f}")
 
     st.divider()
     st.subheader("📊 Загальний рейтинг команди")
@@ -1143,7 +1150,7 @@ def render_cv_analysis():
     st.title("🎥 Computer Vision: Автоматичний аналіз відео")
     st.markdown("""
     Модуль комп'ютерного зору автоматично відстежує переміщення гравців і м'яча,
-    будує теплові карти активності, розраховує фізичні показники (дистанція, швидкість)
+    бує теплові карти активності, розраховує фізичні показники (дистанція, швидкість)
     та фіксує ключові ігрові події. У демо-режимі дані симулюються без реального відео.
     """)
 
