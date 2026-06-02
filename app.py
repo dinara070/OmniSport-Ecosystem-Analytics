@@ -1159,7 +1159,7 @@ def render_cv_analysis():
     st.title("🎥 Computer Vision: Автоматичний аналіз відео")
     st.markdown("""
     Модуль комп'ютерного зору автоматично відстежує переміщення гравців і м'яча,
-    бує теплові карти активності, розраховує фізичні показники (дистанція, швидкість)
+    будує теплові карти активності, розраховує фізичні показники (дистанція, швидкість)
     та фіксує ключові ігрові події. У демо-режимі дані симулюються без реального відео.
     """)
 
@@ -1266,46 +1266,121 @@ def render_cv_analysis():
             return
         st.subheader("🔥 Теплові карти")
         st.caption("Теплова карта показує зони найбільшої активності команди або м'яча. Червоні зони — максимальна концентрація, зелені — мінімальна.")
+
         teams_data = st.session_state.cv_teams_data
         ball_positions = st.session_state.cv_ball_positions
-        selected_team_hm = st.selectbox("Оберіть команду:", list(teams_data.keys()) + ["М'яч"])
 
-        resolution = 40
-        if selected_team_hm == "М'яч":
-            heatmap = np.zeros((resolution, resolution))
-            for (bx, by) in ball_positions:
-                px = int(np.clip((bx/105)*resolution, 0, resolution-1))
-                py = int(np.clip((by/68)*resolution, 0, resolution-1))
-                heatmap[py, px] += 1
-            title = "Теплова карта активності м'яча"
+        hm_mode = st.radio("Режим відображення:", ["Одна команда / М'яч", "Порівняння двох команд"], horizontal=True)
+
+        if hm_mode == "Одна команда / М'яч":
+            selected_team_hm = st.selectbox("Оберіть команду:", list(teams_data.keys()) + ["М'яч"])
+
+            resolution = 40
+            if selected_team_hm == "М'яч":
+                heatmap = np.zeros((resolution, resolution))
+                for (bx, by) in ball_positions:
+                    px = int(np.clip((bx / 105) * resolution, 0, resolution - 1))
+                    py = int(np.clip((by / 68) * resolution, 0, resolution - 1))
+                    heatmap[py, px] += 1
+                title = "Теплова карта активності м'яча"
+            else:
+                heatmap = generate_heatmap_internal(teams_data[selected_team_hm])
+                title = f"Теплова карта: {selected_team_hm}"
+
+            if heatmap.max() > 0:
+                heatmap = heatmap / heatmap.max()
+
+            fig, ax = plt.subplots(figsize=(12, 7))
+            ax.set_facecolor('#1a5c23')
+            cmap = LinearSegmentedColormap.from_list('heat', ['#1a5c23', '#ffdd00', '#ff6600', '#cc0000'])
+            ax.imshow(heatmap, extent=[0, 105, 0, 68], origin='lower', cmap=cmap, alpha=0.75, aspect='auto')
+            ax.add_patch(patches.Rectangle((0, 0), 105, 68, linewidth=2, edgecolor='white', facecolor='none'))
+            ax.plot([52.5, 52.5], [0, 68], 'w-', linewidth=1.5)
+            ax.set_title(title, color='white', fontsize=12)
+            fig.patch.set_facecolor('#0d3318')
+            ax.tick_params(colors='white')
+            st.pyplot(fig)
+            plt.close(fig)
+
+            # Зональна статистика
+            st.subheader("📐 Зональна статистика")
+            st.caption("Поле розділене на три зони: захист (0–35м), середина (35–70м), атака (70–105м).")
+            zones = {
+                "🔵 Захист (0–35м)": heatmap[:, :int(resolution * 35 / 105)],
+                "🟡 Середина (35–70м)": heatmap[:, int(resolution * 35 / 105):int(resolution * 70 / 105)],
+                "🔴 Атака (70–105м)": heatmap[:, int(resolution * 70 / 105):]
+            }
+            zcols = st.columns(3)
+            zone_pcts = []
+            for col, (zone_name, zone_data) in zip(zcols, zones.items()):
+                pct = zone_data.mean() * 100
+                zone_pcts.append(pct)
+                col.metric(zone_name, f"{pct:.1f}%")
+
+            # Тактичний висновок за зонами
+            max_zone_idx = int(np.argmax(zone_pcts))
+            zone_labels = ["зоні захисту", "середині поля", "зоні атаки"]
+            zone_advice = [
+                "⚠️ Команда грає глибоко — переважно оборонна тактика або тиск суперника.",
+                "✅ Контроль центру поля — збалансована позиційна гра.",
+                "🔥 Висока активність в атаці — агресивний наступальний стиль."
+            ]
+            st.info(f"🧠 **Тактичний висновок:** Найбільша активність у **{zone_labels[max_zone_idx]}** ({zone_pcts[max_zone_idx]:.1f}%). {zone_advice[max_zone_idx]}")
+
+            # Лівий/правий фланг
+            st.subheader("↔️ Аналіз флангів")
+            st.caption("Розподіл активності між лівим (нижня половина поля) та правим флангом (верхня половина).")
+            left_half = heatmap[:resolution // 2, :]
+            right_half = heatmap[resolution // 2:, :]
+            left_pct = left_half.mean() * 100
+            right_pct = right_half.mean() * 100
+            fl1, fl2, fl3 = st.columns(3)
+            fl1.metric("⬅️ Лівий фланг", f"{left_pct:.1f}%")
+            fl2.metric("➡️ Правий фланг", f"{right_pct:.1f}%")
+            dominant_flank = "лівий" if left_pct > right_pct else "правий"
+            fl3.metric("🎯 Домінуючий фланг", dominant_flank.upper())
+
         else:
-            heatmap = generate_heatmap_internal(teams_data[selected_team_hm])
-            title = f"Теплова карта: {selected_team_hm}"
+            # Порівняння двох команд поряд
+            st.caption("Порівняйте зони активності обох команд одночасно.")
+            resolution = 40
+            cmap_heat = LinearSegmentedColormap.from_list('heat', ['#1a5c23', '#ffdd00', '#ff6600', '#cc0000'])
 
-        if heatmap.max() > 0:
-            heatmap = heatmap / heatmap.max()
+            fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+            team_names = list(teams_data.keys())
 
-        fig, ax = plt.subplots(figsize=(12, 7))
-        ax.set_facecolor('#1a5c23')
-        cmap = LinearSegmentedColormap.from_list('heat', ['#1a5c23', '#ffdd00', '#ff6600', '#cc0000'])
-        ax.imshow(heatmap, extent=[0,105,0,68], origin='lower', cmap=cmap, alpha=0.75, aspect='auto')
-        ax.add_patch(patches.Rectangle((0,0), 105, 68, linewidth=2, edgecolor='white', facecolor='none'))
-        ax.plot([52.5,52.5], [0,68], 'w-', linewidth=1.5)
-        ax.set_title(title, color='white', fontsize=12)
-        fig.patch.set_facecolor('#0d3318')
-        ax.tick_params(colors='white')
-        st.pyplot(fig); plt.close(fig)
+            for idx, (ax, team_name) in enumerate(zip(axes, team_names[:2])):
+                hm = generate_heatmap_internal(teams_data[team_name])
+                if hm.max() > 0:
+                    hm = hm / hm.max()
+                ax.set_facecolor('#1a5c23')
+                ax.imshow(hm, extent=[0, 105, 0, 68], origin='lower', cmap=cmap_heat, alpha=0.78, aspect='auto')
+                ax.add_patch(patches.Rectangle((0, 0), 105, 68, linewidth=2, edgecolor='white', facecolor='none'))
+                ax.plot([52.5, 52.5], [0, 68], 'w-', linewidth=1.5)
+                ax.set_title(team_name, color='white', fontsize=11)
+                ax.tick_params(colors='white')
 
-        # --- Нова функція: зональна статистика ---
-        st.subheader("📐 Зональна статистика")
-        st.caption("Поле розділене на три зони: захист (0–35м), середина (35–70м), атака (70–105м).")
-        zones = {"🔵 Захист (0–35м)": heatmap[:, :int(resolution*35/105)],
-                 "🟡 Середина (35–70м)": heatmap[:, int(resolution*35/105):int(resolution*70/105)],
-                 "🔴 Атака (70–105м)": heatmap[:, int(resolution*70/105):]}
-        zcols = st.columns(3)
-        for col, (zone_name, zone_data) in zip(zcols, zones.items()):
-            pct = zone_data.mean() * 100
-            col.metric(zone_name, f"{pct:.1f}%")
+            fig.patch.set_facecolor('#0d3318')
+            fig.suptitle("Порівняльні теплові карти команд", color='white', fontsize=13)
+            plt.tight_layout()
+            st.pyplot(fig)
+            plt.close(fig)
+
+            # Порівняльна зональна таблиця
+            st.subheader("📊 Зональне порівняння команд")
+            compare_rows = []
+            for team_name in team_names[:2]:
+                hm = generate_heatmap_internal(teams_data[team_name])
+                if hm.max() > 0:
+                    hm = hm / hm.max()
+                compare_rows.append({
+                    "Команда": team_name,
+                    "Захист (0–35м) %": round(hm[:, :int(resolution * 35 / 105)].mean() * 100, 1),
+                    "Середина (35–70м) %": round(hm[:, int(resolution * 35 / 105):int(resolution * 70 / 105)].mean() * 100, 1),
+                    "Атака (70–105м) %": round(hm[:, int(resolution * 70 / 105):].mean() * 100, 1),
+                })
+            cmp_df = pd.DataFrame(compare_rows).set_index("Команда")
+            st.dataframe(cmp_df.style.background_gradient(cmap='RdYlGn', axis=None), use_container_width=True)
 
     with tab_physics:
         if not st.session_state.cv_analysis_done:
@@ -1313,66 +1388,250 @@ def render_cv_analysis():
             return
         st.subheader("⚡ Фізичні показники гравців")
         st.caption("Розраховані на основі траєкторій переміщення: загальна дистанція, середня та максимальна швидкість за матч.")
+
         teams_data = st.session_state.cv_teams_data
         fps = st.session_state.cv_fps
+
         stats_rows = []
+        speed_timelines = {}  # {team_name: {player_idx: [speeds]}}
+
         for team_name, team_frames in teams_data.items():
-            if not team_frames: continue
+            if not team_frames:
+                continue
             num_players = max(len(f) for f in team_frames)
+            speed_timelines[team_name] = {}
+
             for player_idx in range(num_players):
                 player_positions = [f[player_idx] for f in team_frames if player_idx < len(f)]
-                if len(player_positions) < 2: continue
+                if len(player_positions) < 2:
+                    continue
                 speeds, total_dist = [], 0.0
                 for i in range(1, len(player_positions)):
-                    x1, y1 = player_positions[i-1]
+                    x1, y1 = player_positions[i - 1]
                     x2, y2 = player_positions[i]
-                    dist = np.sqrt((x2-x1)**2 + (y2-y1)**2)
+                    dist = np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
                     total_dist += dist
                     speeds.append(dist * fps * 3.6)
+
+                speed_timelines[team_name][player_idx] = speeds
                 stats_rows.append({
-                    "Команда": team_name, "Гравець": f"#{player_idx+1}",
+                    "Команда": team_name,
+                    "Гравець": f"#{player_idx + 1}",
                     "Дистанція (м)": round(total_dist, 1),
                     "Середня швидкість (км/год)": round(np.mean(speeds), 1),
                     "Макс. швидкість (км/год)": round(np.max(speeds), 1),
+                    "Спринтів (>20 км/год)": int(sum(1 for s in speeds if s > 20)),
+                    "Інтенсивних фаз (>30 км/год)": int(sum(1 for s in speeds if s > 30)),
                 })
+
         if stats_rows:
             stats_df = pd.DataFrame(stats_rows)
-            st.dataframe(stats_df.style.background_gradient(cmap='RdYlGn', subset=['Макс. швидкість (км/год)']),
-                        use_container_width=True, hide_index=True)
-            # --- Нова функція: командний підсумок ---
+
+            st.dataframe(
+                stats_df.style.background_gradient(cmap='RdYlGn', subset=['Макс. швидкість (км/год)'])
+                              .background_gradient(cmap='Blues', subset=['Спринтів (>20 км/год)']),
+                use_container_width=True,
+                hide_index=True
+            )
+
+            # Топ-гравець за дистанцією
+            st.divider()
+            top_runner = stats_df.loc[stats_df["Дистанція (м)"].idxmax()]
+            top_sprinter = stats_df.loc[stats_df["Спринтів (>20 км/год)"].idxmax()]
+            top_speed = stats_df.loc[stats_df["Макс. швидкість (км/год)"].idxmax()]
+
+            award_c1, award_c2, award_c3 = st.columns(3)
+            award_c1.success(f"🏃 **Найбільша дистанція**\n\n{top_runner['Команда']} {top_runner['Гравець']}\n\n**{top_runner['Дистанція (м)']} м**")
+            award_c2.info(f"⚡ **Найбільше спринтів**\n\n{top_sprinter['Команда']} {top_sprinter['Гравець']}\n\n**{int(top_sprinter['Спринтів (>20 км/год)'])} спринтів**")
+            award_c3.warning(f"🚀 **Топ швидкість**\n\n{top_speed['Команда']} {top_speed['Гравець']}\n\n**{top_speed['Макс. швидкість (км/год)']} км/год**")
+
+            # Командний підсумок
             st.divider()
             st.subheader("📊 Командний підсумок")
             team_summary = stats_df.groupby("Команда").agg({
                 "Дистанція (м)": "sum",
                 "Середня швидкість (км/год)": "mean",
-                "Макс. швидкість (км/год)": "max"
+                "Макс. швидкість (км/год)": "max",
+                "Спринтів (>20 км/год)": "sum",
+                "Інтенсивних фаз (>30 км/год)": "sum",
             }).round(1)
+            team_summary.columns = ["Сума дистанції (м)", "Сер. швидкість (км/год)", "Макс. швидкість", "Спринтів разом", "Інтенс. фаз разом"]
             st.dataframe(team_summary, use_container_width=True)
+
+            # Графік динаміки швидкості по часу
+            st.divider()
+            st.subheader("📈 Динаміка швидкості протягом матчу")
+            st.caption("Оберіть гравця для перегляду його профілю швидкості кадр за кадром. Піки — спринти й прискорення.")
+
+            col_sel1, col_sel2 = st.columns(2)
+            sel_team = col_sel1.selectbox("Команда:", list(speed_timelines.keys()), key="phys_team")
+            available_players = list(speed_timelines.get(sel_team, {}).keys())
+            if available_players:
+                sel_player_idx = col_sel2.selectbox("Гравець:", available_players,
+                                                     format_func=lambda x: f"#{x + 1}", key="phys_player")
+                player_speeds = speed_timelines[sel_team][sel_player_idx]
+
+                # Згладжування (ковзне середнє)
+                window = 10
+                smoothed = np.convolve(player_speeds, np.ones(window) / window, mode='valid')
+                time_axis = np.arange(len(smoothed)) / fps
+
+                fig_spd, ax_spd = plt.subplots(figsize=(12, 4))
+                ax_spd.plot(time_axis, smoothed, color='#00BCD4', linewidth=1.8, label='Швидкість (згладжена)')
+                ax_spd.axhline(20, color='#FFD740', linewidth=1, linestyle='--', alpha=0.7, label='Поріг спринту (20 км/год)')
+                ax_spd.axhline(30, color='#FF5252', linewidth=1, linestyle='--', alpha=0.7, label='Інтенсивний спринт (30 км/год)')
+                ax_spd.fill_between(time_axis, smoothed, 20,
+                                    where=smoothed > 20, alpha=0.25, color='#FFD740', label='Спринт-зони')
+                ax_spd.set_xlabel("Час (с)", color='white')
+                ax_spd.set_ylabel("Швидкість (км/год)", color='white')
+                ax_spd.set_title(f"Профіль швидкості: {sel_team} #{sel_player_idx + 1}", color='white', fontsize=11)
+                ax_spd.set_facecolor('#1a1a2e')
+                ax_spd.tick_params(colors='white')
+                ax_spd.legend(facecolor='#1a1a2e', labelcolor='white', fontsize=8)
+                fig_spd.patch.set_facecolor('#0d0d1a')
+                st.pyplot(fig_spd)
+                plt.close(fig_spd)
+
+            # Гістограма розподілу швидкостей по командах
+            st.divider()
+            st.subheader("📊 Розподіл швидкостей по командах")
+            st.caption("Порівняйте, як часто гравці кожної команди досягають різних діапазонів швидкостей.")
+            fig_hist, ax_hist = plt.subplots(figsize=(10, 4))
+            team_colors = {"Червона команда": "#FF5252", "Синя команда": "#448AFF"}
+            for team_name, timeline in speed_timelines.items():
+                all_speeds_flat = [s for player_speeds_list in timeline.values() for s in player_speeds_list]
+                color = team_colors.get(team_name, "#AAAAAA")
+                ax_hist.hist(all_speeds_flat, bins=30, alpha=0.6, color=color, label=team_name, edgecolor='none')
+            ax_hist.axvline(20, color='#FFD740', linewidth=1.5, linestyle='--', label='Поріг спринту')
+            ax_hist.set_xlabel("Швидкість (км/год)", color='white')
+            ax_hist.set_ylabel("Частота", color='white')
+            ax_hist.set_facecolor('#1a1a2e')
+            ax_hist.tick_params(colors='white')
+            ax_hist.legend(facecolor='#1a1a2e', labelcolor='white')
+            fig_hist.patch.set_facecolor('#0d0d1a')
+            st.pyplot(fig_hist)
+            plt.close(fig_hist)
 
     with tab_events:
         if not st.session_state.cv_analysis_done:
             st.info("👈 Спочатку запустіть аналіз.")
             return
         st.subheader("📋 Журнал ігрових подій")
-        st.caption("Автоматично виявлені ключові моменти матчу: удари, паси, перехоплення, стандарти. Відсоток впевненості показує якість розпізнавання CV-моделлю.")
+        st.caption("Автоматично виявлені ключові моменти матчу: удари, паси, перехоплення, стандарти.")
+
         events = st.session_state.cv_events
         if not events:
             st.info("Подій не виявлено.")
-        else:
-            # --- Нова функція: фільтр подій по команді ---
-            all_teams = list(set(e.get("team", "") for e in events))
-            filter_team = st.selectbox("Фільтр за командою:", ["Всі команди"] + all_teams)
+            return
 
-            for event in events:
-                if filter_team != "Всі команди" and event.get("team") != filter_team:
-                    continue
-                t_sec = event.get("time", 0)
-                mins, secs = int(t_sec//60), int(t_sec%60)
-                col_time, col_icon, col_desc, col_conf = st.columns([1, 0.5, 5, 1.5])
-                col_time.markdown(f"**{mins:02d}:{secs:02d}**")
-                col_icon.write(event["icon"])
-                col_desc.write(f"**{event['type']}** — {event.get('team', '')}")
-                col_conf.metric("Впевненість", f"{event.get('confidence', 0)*100:.0f}%")
+        # Зведена статистика по типах подій
+        from collections import Counter
+        event_types = [e["type"] for e in events]
+        event_teams = [e.get("team", "") for e in events]
+        type_counts = Counter(event_types)
+        team_counts = Counter(event_teams)
+
+        st.subheader("📊 Зведена статистика матчу")
+        stat_cols = st.columns(len(type_counts))
+        icons_map = {"УДАР ПО ВОРОТАХ": "⚽", "ПАС У РОЗРІЗ": "🎯", "ПЕРЕХОПЛЕННЯ": "🛡️", "КУТОВИЙ": "🚩"}
+        for col, (etype, cnt) in zip(stat_cols, type_counts.most_common()):
+            col.metric(f"{icons_map.get(etype, '📌')} {etype}", cnt)
+
+        st.divider()
+
+        # Графік: події по хвилинах (timeline)
+        st.subheader("⏱️ Часова шкала подій")
+        st.caption("Розподіл ігрових подій по хвилинах матчу. Кластери — найнасиченіші відрізки гри.")
+
+        total_time = max(e["time"] for e in events) if events else 90
+        bin_size = 10
+        num_bins = int(total_time // bin_size) + 1
+        bin_labels = [f"{i*bin_size}–{(i+1)*bin_size}с" for i in range(num_bins)]
+        red_bins = [0] * num_bins
+        blue_bins = [0] * num_bins
+
+        for e in events:
+            bin_idx = min(int(e["time"] // bin_size), num_bins - 1)
+            if "Червона" in e.get("team", ""):
+                red_bins[bin_idx] += 1
+            else:
+                blue_bins[bin_idx] += 1
+
+        fig_tl, ax_tl = plt.subplots(figsize=(12, 4))
+        x_pos = np.arange(len(bin_labels))
+        width = 0.4
+        ax_tl.bar(x_pos - width / 2, red_bins, width, color='#FF5252', alpha=0.85, label='Червона команда', edgecolor='none')
+        ax_tl.bar(x_pos + width / 2, blue_bins, width, color='#448AFF', alpha=0.85, label='Синя команда', edgecolor='none')
+        ax_tl.set_xticks(x_pos)
+        ax_tl.set_xticklabels(bin_labels, rotation=30, ha='right', color='white', fontsize=8)
+        ax_tl.set_ylabel("Кількість подій", color='white')
+        ax_tl.set_title("Події по відрізках часу", color='white', fontsize=11)
+        ax_tl.set_facecolor('#1a1a2e')
+        ax_tl.tick_params(colors='white')
+        ax_tl.legend(facecolor='#1a1a2e', labelcolor='white')
+        fig_tl.patch.set_facecolor('#0d0d1a')
+        st.pyplot(fig_tl)
+        plt.close(fig_tl)
+
+        # Кругова діаграма типів подій
+        st.divider()
+        col_pie_ev, col_pie_team = st.columns(2)
+
+        with col_pie_ev:
+            st.subheader("🥧 Типи подій")
+            fig_pie, ax_pie = plt.subplots(figsize=(5, 4))
+            labels = [f"{icons_map.get(k,'📌')} {k}" for k in type_counts.keys()]
+            ax_pie.pie(type_counts.values(), labels=labels, autopct='%1.0f%%',
+                       startangle=90, colors=['#FF5252', '#FFD740', '#448AFF', '#66BB6A'],
+                       textprops={'color': 'white', 'fontsize': 8})
+            ax_pie.axis('equal')
+            fig_pie.patch.set_facecolor('#0d0d1a')
+            st.pyplot(fig_pie)
+            plt.close(fig_pie)
+
+        with col_pie_team:
+            st.subheader("🥧 Активність по командах")
+            fig_pie2, ax_pie2 = plt.subplots(figsize=(5, 4))
+            ax_pie2.pie(team_counts.values(), labels=team_counts.keys(), autopct='%1.0f%%',
+                        startangle=90, colors=['#FF5252', '#448AFF'],
+                        textprops={'color': 'white', 'fontsize': 9})
+            ax_pie2.axis('equal')
+            fig_pie2.patch.set_facecolor('#0d0d1a')
+            st.pyplot(fig_pie2)
+            plt.close(fig_pie2)
+
+        # Фільтрований журнал
+        st.divider()
+        st.subheader("📋 Детальний журнал")
+        all_teams_ev = list(set(e.get("team", "") for e in events))
+        col_f1, col_f2 = st.columns(2)
+        filter_team = col_f1.selectbox("Фільтр за командою:", ["Всі команди"] + all_teams_ev, key="ev_team_filter")
+        filter_type = col_f2.selectbox("Фільтр за типом:", ["Всі типи"] + list(type_counts.keys()), key="ev_type_filter")
+
+        avg_conf = np.mean([e.get("confidence", 0) for e in events]) * 100
+        st.caption(f"Середня впевненість CV-моделі по всіх подіях: **{avg_conf:.1f}%** | Всього подій: **{len(events)}**")
+
+        shown = 0
+        for event in events:
+            if filter_team != "Всі команди" and event.get("team") != filter_team:
+                continue
+            if filter_type != "Всі типи" and event.get("type") != filter_type:
+                continue
+            shown += 1
+            t_sec = event.get("time", 0)
+            mins, secs = int(t_sec // 60), int(t_sec % 60)
+            conf = event.get("confidence", 0)
+            conf_color = "🟢" if conf > 0.85 else ("🟡" if conf > 0.70 else "🔴")
+            col_time, col_icon, col_desc, col_conf = st.columns([1, 0.5, 5, 1.5])
+            col_time.markdown(f"**{mins:02d}:{secs:02d}**")
+            col_icon.write(event["icon"])
+            col_desc.write(f"**{event['type']}** — {event.get('team', '')}")
+            col_conf.markdown(f"{conf_color} **{conf * 100:.0f}%**")
+
+        if shown == 0:
+            st.info("Жодної події не відповідає фільтрам.")
+        else:
+            st.caption(f"Показано **{shown}** з **{len(events)}** подій.")
 
 
 # ==========================================
@@ -2106,7 +2365,7 @@ def render_ai_advisor(df):
     st.title("🧬 Індивідуальні плани тренувань (AI Advisor)")
     st.markdown("""
     AI-тренер аналізує фізичний профіль кожного спортсмена та генерує персоналізовані
-    рекомендації й тижневий розклад тренувань. Враховуються поточні показники швидкості,
+    рекоменції й тижневий розклад тренувань. Враховуються поточні показники швидкості,
     витривалості, сили та тижневого навантаження — щоб знайти оптимальний баланс між
     розвитком і відновленням.
     """)
