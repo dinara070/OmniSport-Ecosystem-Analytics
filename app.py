@@ -90,6 +90,17 @@ def init_db():
         )
     """)
 
+    # Журнал відвідуваності (Нове для ДЮСШ)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS attendance (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            date        TEXT,
+            coach_group TEXT,
+            athlete     TEXT,
+            status      TEXT
+        )
+    """)
+
     c.execute("""
         CREATE TABLE IF NOT EXISTS video_notes (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -147,12 +158,20 @@ def init_db():
         )
     """)
 
-    # БЕЗПЕЧНА МІГРАЦІЯ: Додаємо нові колонки для безпеки та доступу
-    try:
-        c.execute("ALTER TABLE athletes ADD COLUMN coach TEXT DEFAULT 'Тренер 1'")
-        c.execute("ALTER TABLE athletes ADD COLUMN parent_token TEXT")
-    except sqlite3.OperationalError:
-        pass # Колонки вже існують
+    # БЕЗПЕЧНА МІГРАЦІЯ: Додаємо нові колонки для безпеки, доступу та Soft Skills
+    migrations = [
+        "ALTER TABLE athletes ADD COLUMN coach TEXT DEFAULT 'Тренер 1'",
+        "ALTER TABLE athletes ADD COLUMN parent_token TEXT",
+        "ALTER TABLE athletes ADD COLUMN discipline INTEGER DEFAULT 50",
+        "ALTER TABLE athletes ADD COLUMN teamwork INTEGER DEFAULT 50",
+        "ALTER TABLE athletes ADD COLUMN diligence INTEGER DEFAULT 50"
+    ]
+    
+    for mig in migrations:
+        try:
+            c.execute(mig)
+        except sqlite3.OperationalError:
+            pass # Колонка вже існує
 
     conn.commit()
 
@@ -188,11 +207,14 @@ def _seed_default_athletes(conn):
 
 def db_load_athletes() -> pd.DataFrame:
     conn = get_connection()
+    # Додано coach, parent_token, discipline, teamwork, diligence
     df = pd.read_sql_query("""
         SELECT id, name AS "Ім'я", age AS "Вік", sport AS "Вид спорту",
                matches AS "Матчі", points AS "Очки", speed AS "Швидкість",
                stamina AS "Витривалість", power AS "Сила",
-               workload AS "Навантаження_7днів", number AS "Номер"
+               workload AS "Навантаження_7днів", number AS "Номер",
+               coach AS "Тренер", parent_token AS "Токен",
+               discipline AS "Дисципліна", teamwork AS "Командна робота", diligence AS "Старанність"
         FROM athletes ORDER BY id
     """, conn)
     conn.close()
@@ -227,6 +249,29 @@ def db_update_athlete_stats(athlete_name: str, speed: float, stamina: int, power
     """, (speed, stamina, power, athlete_name))
     conn.commit()
     conn.close()
+
+
+def db_update_soft_skills(athlete_name: str, disc: int, team: int, dil: int):
+    conn = get_connection()
+    conn.execute("UPDATE athletes SET discipline = ?, teamwork = ?, diligence = ?, updated_at = CURRENT_TIMESTAMP WHERE name = ?", (disc, team, dil, athlete_name))
+    conn.commit()
+    conn.close()
+
+def db_save_attendance(date: str, coach_group: str, attendance_dict: dict):
+    conn = get_connection()
+    c = conn.cursor()
+    # Видаляємо старі записи за цей день для цієї групи, щоб уникнути дублів
+    c.execute("DELETE FROM attendance WHERE date = ? AND coach_group = ?", (date, coach_group))
+    for athlete, status in attendance_dict.items():
+        c.execute("INSERT INTO attendance (date, coach_group, athlete, status) VALUES (?, ?, ?, ?)", (date, coach_group, athlete, status))
+    conn.commit()
+    conn.close()
+
+def db_load_attendance(coach_group: str) -> pd.DataFrame:
+    conn = get_connection()
+    df = pd.read_sql_query("SELECT date, athlete, status FROM attendance WHERE coach_group = ? ORDER BY date DESC", conn, params=(coach_group,))
+    conn.close()
+    return df
 
 
 def db_delete_all_athletes():
@@ -402,7 +447,13 @@ def calculate_per(row):
 def load_athletes_with_per() -> pd.DataFrame:
     df = db_load_athletes()
     if not df.empty:
+        # Розрахунок комплексного рейтингу
         df['PER (Рейтинг)'] = df.apply(calculate_per, axis=1)
+        
+        # Розрахунок вікової категорії (ДОДАНО)
+        if 'Вік' in df.columns:
+            df['Категорія'] = df['Вік'].apply(get_age_category)
+            
     return df
 
 
@@ -416,6 +467,17 @@ def get_performance_badge(per_value: float) -> str:
         return "🥉 Стабільний"
     else:
         return "📈 Зростає"
+
+
+def get_age_category(age):
+    """Повертає вікову категорію ДЮСШ"""
+    if pd.isna(age): return "Невідомо"
+    age = int(age)
+    if age <= 10: return "U-10"
+    elif age <= 12: return "U-12"
+    elif age <= 15: return "U-15"
+    elif age <= 18: return "U-18"
+    else: return "Дорослі"
 
 
 def get_sport_emoji(sport: str) -> str:
@@ -468,13 +530,19 @@ def anonymize_data(df):
 # ==========================================
 # КАБІНЕТ БАТЬКІВ
 # ==========================================
+# ==========================================
+# КАБІНЕТ БАТЬКІВ
+# ==========================================
 def render_parent_cabinet(token):
-    st.set_page_config(page_title="Кабінет батьків | OmniSport", layout="centered")
+    # st.set_page_config(page_title="Кабінет батьків | OmniSport", layout="centered") # Викликається на початку файлу
     conn = get_connection()
+    
+    # Оновлений SQL-запит з новими полями
     student = conn.execute("""
-        SELECT name, sport, points, workload, speed, stamina, power, coach 
+        SELECT name, sport, age, points, workload, speed, stamina, power, coach, discipline, teamwork, diligence 
         FROM athletes WHERE parent_token = ?
     """, (token,)).fetchone()
+    
     notes = conn.execute("""
         SELECT note, created_at FROM athlete_notes 
         WHERE athlete = (SELECT name FROM athletes WHERE parent_token = ?)
@@ -500,6 +568,14 @@ def render_parent_cabinet(token):
     status = "🟢 Оптимально" if workload < 3 else "🔴 Перевтома"
     c4.metric("Статус здоров'я", status)
 
+    # ДОДАНИЙ БЛОК: Soft Skills
+    st.divider()
+    st.subheader("🌟 Оцінка прогресу (Soft Skills)")
+    st.caption("Показники поведінки та роботи в команді (від 0 до 100)")
+    st.progress(student['discipline']/100, text=f"Дисципліна: {student['discipline']}")
+    st.progress(student['teamwork']/100, text=f"Командна робота: {student['teamwork']}")
+    st.progress(student['diligence']/100, text=f"Старанність (Самосадача): {student['diligence']}")
+
     st.divider()
     st.subheader("💬 Коментарі тренера")
     if notes:
@@ -507,6 +583,7 @@ def render_parent_cabinet(token):
             st.info(f"**{n['created_at'][:10]}**: {n['note']}")
     else:
         st.write("Поки немає нотаток від тренера.")
+
 
 # ==========================================
 # ГОЛОВНА ЛОГІКА
@@ -832,103 +909,201 @@ def render_team_analytics(df):
 # ==========================================
 # 2. БАЗА ГРАВЦІВ (CRM)
 # ==========================================
+# ==========================================
+# 2. БАЗА ГРАВЦІВ (CRM + ДЮСШ)
+# ==========================================
 def render_crm(df):
-    st.title("👥 Управління складом")
+    st.title("👥 Управління групою (ДЮСШ)")
     st.markdown("""
-    Централізована база всіх спортсменів команди. Тут можна додавати нових гравців,
-    шукати за ім'ям або фільтрувати за видом спорту. Усі зміни зберігаються в SQLite-базі
-    і залишаються після перезапуску додатку.
+    Централізована база всіх спортсменів групи. Тут можна додавати нових гравців,
+    відмічати відвідуваність, генерувати доступи для батьків та оновлювати фізичні показники й soft skills. 
+    Усі зміни зберігаються в базі даних.
     """)
+    
+    tab_list, tab_attendance, tab_soft = st.tabs(["📇 Список гравців", "📅 Відвідуваність", "🌟 Оцінка Soft Skills"])
 
-    st.subheader("🔍 Пошук та фільтри")
-    col_search, col_filter, col_sort = st.columns(3)
-    with col_search:
-        search_query = st.text_input("Пошук за ім'ям", placeholder="Введіть ім'я гравця...")
-    with col_filter:
-        sport_options = ["Всі види"] + list(df['Вид спорту'].dropna().unique())
-        selected_sport = st.selectbox("Фільтр за видом спорту", sport_options)
-    with col_sort:
-        sort_by = st.selectbox("Сортувати за", ["PER (Рейтинг)", "Швидкість", "Витривалість", "Сила", "Матчі"])
+    with tab_list:
+        st.subheader("🔍 Пошук та фільтри")
+        col_search, col_filter1, col_filter2, col_sort = st.columns(4)
+        
+        with col_search:
+            search_query = st.text_input("Пошук за ім'ям", placeholder="Введіть ім'я...")
+        with col_filter1:
+            sport_options = ["Всі види"] + list(df['Вид спорту'].dropna().unique())
+            selected_sport = st.selectbox("Вид спорту", sport_options)
+        with col_filter2:
+            cat_options = ["Всі категорії"] + list(df['Категорія'].dropna().unique()) if 'Категорія' in df.columns else ["Всі категорії"]
+            selected_cat = st.selectbox("Вікова категорія", cat_options)
+        with col_sort:
+            sort_by = st.selectbox("Сортувати за", ["PER (Рейтинг)", "Швидкість", "Витривалість", "Сила", "Матчі", "Дисципліна"])
 
-    filtered_df = df.copy()
-    if search_query:
-        filtered_df = filtered_df[filtered_df["Ім'я"].str.contains(search_query, case=False, na=False)]
-    if selected_sport != "Всі види":
-        filtered_df = filtered_df[filtered_df['Вид спорту'] == selected_sport]
-    filtered_df = filtered_df.sort_values(by=sort_by, ascending=False)
+        # Застосування фільтрів
+        filtered_df = df.copy()
+        if search_query: 
+            filtered_df = filtered_df[filtered_df["Ім'я"].str.contains(search_query, case=False, na=False)]
+        if selected_sport != "Всі види": 
+            filtered_df = filtered_df[filtered_df['Вид спорту'] == selected_sport]
+        if selected_cat != "Всі категорії" and 'Категорія' in filtered_df.columns: 
+            filtered_df = filtered_df[filtered_df['Категорія'] == selected_cat]
+            
+        if sort_by in filtered_df.columns:
+            filtered_df = filtered_df.sort_values(by=sort_by, ascending=False)
 
-    st.divider()
+        st.divider()
 
-    with st.expander("➕ Додати нового спортсмена", expanded=False):
-        st.caption("Заповніть форму нижче, щоб додати гравця до бази. Усі поля зі зірочкою (*) обов'язкові.")
-        with st.form("add_form"):
-            c1, c_age, c2 = st.columns([2, 1, 2])
-            name = c1.text_input("Ім'я *")
-            age = c_age.number_input("Вік", min_value=14, max_value=60, value=20)
-            sport = c2.selectbox("Вид спорту", ["Волейбол", "Футбол", "Біг", "Теніс", "Баскетбол", "Бокс", "Плавання", "Велоспорт"])
+        # --- 1. ДОДАВАННЯ ГРАВЦЯ ---
+        with st.expander("➕ Додати нового спортсмена", expanded=False):
+            st.caption("Заповніть форму нижче, щоб додати гравця до бази. Усі поля зі зірочкою (*) обов'язкові.")
+            with st.form("add_form"):
+                c1, c_age, c2 = st.columns([2, 1, 2])
+                name = c1.text_input("Ім'я *")
+                age = c_age.number_input("Вік", min_value=5, max_value=60, value=10)
+                sport = c2.selectbox("Вид спорту", ["Футбол", "Волейбол", "Біг", "Теніс", "Баскетбол", "Бокс", "Плавання", "Велоспорт", "Дзюдо"])
 
-            c3, c4, c5, c6, c7, c8, c9 = st.columns(7)
-            matches = c3.number_input("Матчі", min_value=0)
-            score = c4.number_input("Очки", min_value=0)
-            speed = c5.number_input("Швидк.", 0.0, 50.0, 20.0)
-            stamina = c6.number_input("Витривал.", 0, 100, 50)
-            power = c7.number_input("Сила", 0, 100, 50)
-            workload = c8.number_input("Матчів/тиж.", 0, 7, 0)
-            number = c9.number_input("Номер", 1, 99, 1)
+                c3, c4, c5, c6, c7, c8, c9 = st.columns(7)
+                matches = c3.number_input("Матчі", min_value=0)
+                score = c4.number_input("Очки", min_value=0)
+                speed = c5.number_input("Швидк.", 0.0, 50.0, 20.0)
+                stamina = c6.number_input("Витривал.", 0, 100, 50)
+                power = c7.number_input("Сила", 0, 100, 50)
+                workload = c8.number_input("Матчів/тиж.", 0, 7, 0)
+                number = c9.number_input("Номер", 1, 99, 1)
 
-            if st.form_submit_button("Зберегти гравця", type="primary"):
-                if name.strip() == "":
-                    st.error("⚠️ Будь ласка, введіть ім'я спортсмена.")
+                if st.form_submit_button("Зберегти гравця", type="primary"):
+                    if name.strip() == "":
+                        st.error("⚠️ Будь ласка, введіть ім'я спортсмена.")
+                    else:
+                        coach_group = st.session_state.user_info['coach_group']
+                        db_add_athlete(name, age, sport, int(matches), int(score),
+                                       speed, int(stamina), int(power), int(workload), int(number), coach_group)
+                        st.success(f"✅ Спортсмена **{name}** збережено у базі даних!")
+                        st.rerun()
+
+        # --- 2. QR-КОД ДЛЯ БАТЬКІВ ---
+        with st.expander("🔗 Доступ для батьків (QR-код)", expanded=False):
+            st.caption("Поділіться цим посиланням або QR-кодом з батьками, щоб вони бачили прогрес дитини.")
+            if not df.empty:
+                parent_player = st.selectbox("Оберіть спортсмена:", df["Ім'я"], key="parent_select")
+                token_row = df[df["Ім'я"] == parent_player].iloc[0]
+                token = token_row.get('Токен', None)
+                
+                if token:
+                    base_url = "http://localhost:8501" # Замініть на свій реальний домен після деплою
+                    parent_link = f"{base_url}/?token={token}"
+                    encoded_url = urllib.parse.quote(parent_link)
+                    qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=200x200&data={encoded_url}"
+                    
+                    c_link, c_qr = st.columns([2, 1])
+                    with c_link:
+                        st.info(f"**Пряме посилання:**\n\n{parent_link}")
+                        st.write("Батьки не зможуть змінювати дані або бачити профілі інших дітей.")
+                    with c_qr:
+                        st.image(qr_url, caption="Сканувати для доступу")
                 else:
-                    db_add_athlete(name, age, sport, int(matches), int(score),
-                                   speed, int(stamina), int(power), int(workload), int(number))
-                    st.success(f"✅ Спортсмена **{name}** збережено у базі даних!")
+                    st.warning("Токен для цього гравця не знайдено. Будь ласка, перезбережіть профіль.")
+
+        # --- 3. ШВИДКЕ ОНОВЛЕННЯ ---
+        with st.expander("✏️ Швидке оновлення фізичних показників", expanded=False):
+            st.caption("Оновіть швидкість, витривалість або силу після останнього тестування — без повного перезаписування картки гравця.")
+            if not df.empty:
+                edit_player = st.selectbox("Оберіть гравця для оновлення:", df["Ім'я"], key="edit_select")
+                ep = df[df["Ім'я"] == edit_player].iloc[0]
+                ec1, ec2, ec3 = st.columns(3)
+                new_speed = ec1.number_input("Нова швидкість", 0.0, 50.0, float(ep['Швидкість']), key="es")
+                new_stamina = ec2.number_input("Нова витривалість", 0, 100, int(ep['Витривалість']), key="est")
+                new_power = ec3.number_input("Нова сила", 0, 100, int(ep['Сила']), key="ep")
+                if st.button("💾 Оновити показники", key="update_stats"):
+                    db_update_athlete_stats(edit_player, new_speed, new_stamina, new_power)
+                    st.success(f"✅ Показники {edit_player} оновлено!")
                     st.rerun()
 
-    # --- Нова функція: швидке редагування показників ---
-    with st.expander("✏️ Швидке оновлення фізичних показників", expanded=False):
-        st.caption("Оновіть швидкість, витривалість або силу після останнього тестування — без повного перезаписування картки гравця.")
-        edit_player = st.selectbox("Оберіть гравця для оновлення:", df["Ім'я"], key="edit_select")
-        ep = df[df["Ім'я"] == edit_player].iloc[0]
-        ec1, ec2, ec3 = st.columns(3)
-        new_speed = ec1.number_input("Нова швидкість", 0.0, 50.0, float(ep['Швидкість']), key="es")
-        new_stamina = ec2.number_input("Нова витривалість", 0, 100, int(ep['Витривалість']), key="est")
-        new_power = ec3.number_input("Нова сила", 0, 100, int(ep['Сила']), key="ep")
-        if st.button("💾 Оновити показники", key="update_stats"):
-            db_update_athlete_stats(edit_player, new_speed, new_stamina, new_power)
-            st.success(f"✅ Показники {edit_player} оновлено!")
-            st.rerun()
+        # --- 4. НОТАТКИ ---
+        with st.expander("📝 Нотатки до гравця", expanded=False):
+            st.caption("Додавайте спостереження, медичні або тактичні нотатки. Батьки зможуть бачити їх у своєму кабінеті.")
+            if not df.empty:
+                note_player = st.selectbox("Оберіть гравця:", df["Ім'я"], key="note_select")
+                note_text = st.text_area("Нотатка:", placeholder="Наприклад: добре відпрацював на тренуванні, але скаржився на коліно...", height=80)
+                if st.button("💾 Зберегти нотатку", key="save_athlete_note"):
+                    if note_text.strip():
+                        db_save_athlete_note(note_player, note_text)
+                        st.success("✅ Нотатку збережено!")
+                    else:
+                        st.warning("Введіть текст нотатки.")
 
-    # --- Нова функція: нотатки до гравця ---
-    with st.expander("📝 Нотатки до гравця", expanded=False):
-        st.caption("Додавайте спостереження, медичні або тактичні нотатки до кожного спортсмена. Зберігаються в БД.")
-        note_player = st.selectbox("Оберіть гравця:", df["Ім'я"], key="note_select")
-        note_text = st.text_area("Нотатка:", placeholder="Наприклад: після матчу скаржився на ліве коліно...", height=80)
-        if st.button("💾 Зберегти нотатку", key="save_athlete_note"):
-            if note_text.strip():
-                db_save_athlete_note(note_player, note_text)
-                st.success("✅ Нотатку збережено!")
-            else:
-                st.warning("Введіть текст нотатки.")
+                notes = db_load_athlete_notes(note_player)
+                if notes:
+                    st.markdown(f"**Останні нотатки для {note_player}:**")
+                    for n in notes[:3]:
+                        st.caption(f"🕐 {n['created_at'][:16]}")
+                        st.write(n['note'])
+                        st.divider()
 
-        notes = db_load_athlete_notes(note_player)
-        if notes:
-            st.markdown(f"**Попередні нотатки для {note_player}:**")
-            for n in notes:
-                st.caption(f"🕐 {n['created_at'][:16]}")
-                st.write(n['note'])
-                st.divider()
+        # --- 5. ВІДОБРАЖЕННЯ ТАБЛИЦІ ---
+        st.subheader(f"📋 Список гравців (Знайдено: {len(filtered_df)})")
+        st.caption(f"Показано {len(filtered_df)} з {len(df)} гравців. Колонка «Рівень» розраховується автоматично за PER.")
 
-    st.subheader(f"📋 Список гравців (Знайдено: {len(filtered_df)})")
-    st.caption(f"Показано {len(filtered_df)} з {len(df)} гравців. Колонка «Рівень» розраховується автоматично за PER.")
+        if not filtered_df.empty:
+            display_df = filtered_df.copy()
+            display_df['Рівень'] = display_df['PER (Рейтинг)'].apply(get_performance_badge)
+            
+            # Формуємо список колонок динамічно (залежно від того, що є в БД)
+            display_cols = ["Ім'я", "Категорія", "Вік", "Вид спорту", "Матчі", "Швидкість", "Витривалість", "Сила", "Дисципліна", "PER (Рейтинг)", "Рівень"]
+            existing_cols = [col for col in display_cols if col in display_df.columns]
+            
+            styled_df = display_df[existing_cols].style.format({
+                'Швидкість': '{:.1f}', 'Витривалість': '{:.0f}',
+                'Сила': '{:.0f}', 'PER (Рейтинг)': '{:.1f}'
+            })
+            st.dataframe(styled_df, use_container_width=True, hide_index=True, height=400)
 
-    display_df = filtered_df.copy()
-    display_df['Рівень'] = display_df['PER (Рейтинг)'].apply(get_performance_badge)
-    styled_df = display_df.style.format({
-        'Швидкість': '{:.1f}', 'Витривалість': '{:.0f}',
-        'Сила': '{:.0f}', 'PER (Рейтинг)': '{:.1f}'
-    })
-    st.dataframe(styled_df, use_container_width=True, hide_index=True, height=400)
+    # ==========================================
+    # Вкладка 2: ВІДВІДУВАНІСТЬ
+    # ==========================================
+    with tab_attendance:
+        st.subheader("📅 Журнал відвідуваності")
+        st.caption("Відмічайте присутніх на тренуванні. Дані зберігаються в базі.")
+        
+        att_date = st.date_input("Дата тренування", datetime.today())
+        date_str = att_date.strftime("%Y-%m-%d")
+        coach_group = st.session_state.user_info['coach_group']
+        
+        # Завантажуємо існуючий журнал на сьогодні
+        existing_att = db_load_attendance(coach_group)
+        today_att = existing_att[existing_att['date'] == date_str]
+        status_map = dict(zip(today_att['athlete'], today_att['status'])) if not today_att.empty else {}
+
+        with st.form("attendance_form"):
+            new_status = {}
+            for name in df["Ім'я"].tolist():
+                current_val = status_map.get(name, "Присутній")
+                idx = ["Присутній", "Відсутній", "Хворіє"].index(current_val) if current_val in ["Присутній", "Відсутній", "Хворіє"] else 0
+                new_status[name] = st.radio(f"{name}", ["Присутній", "Відсутній", "Хворіє"], index=idx, horizontal=True)
+            
+            if st.form_submit_button("💾 Зберегти відвідуваність", type="primary"):
+                db_save_attendance(date_str, coach_group, new_status)
+                st.success("✅ Журнал збережено!")
+                st.rerun()
+
+    # ==========================================
+    # Вкладка 3: SOFT SKILLS
+    # ==========================================
+    with tab_soft:
+        st.subheader("🌟 Оцінка поведінки та старанності")
+        st.caption("Оновлюйте ці показники раз на місяць. Батьки побачать їх у своєму кабінеті.")
+        
+        if not df.empty:
+            soft_player = st.selectbox("Спортсмен:", df["Ім'я"], key="soft_select")
+            sp = df[df["Ім'я"] == soft_player].iloc[0]
+            
+            c_s1, c_s2, c_s3 = st.columns(3)
+            new_disc = c_s1.slider("Дисципліна", 0, 100, int(sp.get('Дисципліна', 50)))
+            new_team = c_s2.slider("Командна робота", 0, 100, int(sp.get('Командна робота', 50)))
+            new_dil = c_s3.slider("Старанність", 0, 100, int(sp.get('Старанність', 50)))
+            
+            if st.button("💾 Оновити Soft Skills", type="primary"):
+                db_update_soft_skills(soft_player, new_disc, new_team, new_dil)
+                st.success(f"✅ Показники {soft_player} успішно оновлено!")
+                st.rerun()
 
 
 # ==========================================
