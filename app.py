@@ -11,6 +11,9 @@ import sqlite3
 import json
 import os
 from datetime import datetime, timedelta
+import hashlib
+import uuid
+import urllib.parse
 
 # ==========================================
 # 0. КОНФІГУРАЦІЯ
@@ -47,6 +50,28 @@ def init_db():
     conn = get_connection()
     c = conn.cursor()
 
+    # Створення таблиці користувачів (RBAC)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY,
+            password_hash TEXT,
+            role TEXT,
+            coach_group TEXT
+        )
+    """)
+
+    # Базові користувачі (пароль = логін для демо)
+    # Ролі: admin (бачить всіх), coach (бачить лише свою групу)
+    default_users = [
+        ("admin", hashlib.sha256("admin".encode()).hexdigest(), "admin", "Всі"),
+        ("trener1", hashlib.sha256("trener1".encode()).hexdigest(), "coach", "Тренер 1"),
+        ("trener2", hashlib.sha256("trener2".encode()).hexdigest(), "coach", "Тренер 2")
+    ]
+    c.execute("SELECT COUNT(*) FROM users")
+    if c.fetchone()[0] == 0:
+        c.executemany("INSERT INTO users VALUES (?, ?, ?, ?)", default_users)
+
+    # Створюємо athletes
     c.execute("""
         CREATE TABLE IF NOT EXISTS athletes (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -112,7 +137,7 @@ def init_db():
         )
     """)
 
-    # Таблиця нотаток до гравців (нова)
+    # Таблиця нотаток до гравців
     c.execute("""
         CREATE TABLE IF NOT EXISTS athlete_notes (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -122,11 +147,24 @@ def init_db():
         )
     """)
 
+    # БЕЗПЕЧНА МІГРАЦІЯ: Додаємо нові колонки для безпеки та доступу
+    try:
+        c.execute("ALTER TABLE athletes ADD COLUMN coach TEXT DEFAULT 'Тренер 1'")
+        c.execute("ALTER TABLE athletes ADD COLUMN parent_token TEXT")
+    except sqlite3.OperationalError:
+        pass # Колонки вже існують
+
     conn.commit()
 
     count = c.execute("SELECT COUNT(*) FROM athletes").fetchone()[0]
     if count == 0:
         _seed_default_athletes(conn)
+        # Генеруємо токени для демо-даних
+        c.execute("SELECT id FROM athletes WHERE parent_token IS NULL")
+        for row in c.fetchall():
+            token = str(uuid.uuid4())
+            c.execute("UPDATE athletes SET parent_token = ? WHERE id = ?", (token, row['id']))
+        conn.commit()
 
     conn.close()
 
@@ -389,16 +427,136 @@ def get_sport_emoji(sport: str) -> str:
 
 
 # ==========================================
+# МОДУЛЬ БЕЗПЕКИ ТА АВТОРИЗАЦІЇ
+# ==========================================
+
+def authenticate(username, password):
+    conn = get_connection()
+    user = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+    conn.close()
+    if user:
+        pass_hash = hashlib.sha256(password.encode()).hexdigest()
+        if user['password_hash'] == pass_hash:
+            return dict(user)
+    return None
+
+def render_login_screen():
+    st.title("🔒 Вхід у систему OmniSport Pro")
+    with st.container():
+        st.info("💡 **Демо доступи:** логін `admin` (пароль `admin`) або `trener1` (пароль `trener1`)")
+        with st.form("login_form"):
+            user = st.text_input("Логін")
+            pwd = st.text_input("Пароль", type="password")
+            submitted = st.form_submit_button("Увійти", type="primary", use_container_width=True)
+            if submitted:
+                user_data = authenticate(user, pwd)
+                if user_data:
+                    st.session_state.logged_in = True
+                    st.session_state.user_info = user_data
+                    st.rerun()
+                else:
+                    st.error("❌ Невірний логін або пароль")
+
+def anonymize_data(df):
+    """Шифрує імена дітей для дотримання GDPR"""
+    df_anon = df.copy()
+    if "Ім'я" in df_anon.columns:
+        # Залишає першу літеру і додає зірочки, напр. "Олександр" -> "О***"
+        df_anon["Ім'я"] = df_anon["Ім'я"].apply(lambda x: str(x)[0] + "***" if pd.notnull(x) else "Невідомо")
+    return df_anon
+
+# ==========================================
+# КАБІНЕТ БАТЬКІВ
+# ==========================================
+def render_parent_cabinet(token):
+    st.set_page_config(page_title="Кабінет батьків | OmniSport", layout="centered")
+    conn = get_connection()
+    student = conn.execute("""
+        SELECT name, sport, points, workload, speed, stamina, power, coach 
+        FROM athletes WHERE parent_token = ?
+    """, (token,)).fetchone()
+    notes = conn.execute("""
+        SELECT note, created_at FROM athlete_notes 
+        WHERE athlete = (SELECT name FROM athletes WHERE parent_token = ?)
+        ORDER BY created_at DESC LIMIT 5
+    """, (token,)).fetchall()
+    conn.close()
+
+    if not student:
+        st.error("❌ Посилання недійсне або застаріло. Зверніться до тренера.")
+        return
+
+    st.title(f"🎓 Кабінет спортсмена: {student['name']}")
+    st.caption(f"Група: {student['coach']} | Вид спорту: {student['sport']}")
+    
+    st.divider()
+    st.subheader("📊 Поточна форма та успішність")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Очки/Бали", student['points'])
+    c2.metric("Витривалість", student['stamina'])
+    c3.metric("Швидкість", f"{student['speed']} км/год")
+    
+    workload = student['workload']
+    status = "🟢 Оптимально" if workload < 3 else "🔴 Перевтома"
+    c4.metric("Статус здоров'я", status)
+
+    st.divider()
+    st.subheader("💬 Коментарі тренера")
+    if notes:
+        for n in notes:
+            st.info(f"**{n['created_at'][:10]}**: {n['note']}")
+    else:
+        st.write("Поки немає нотаток від тренера.")
+
+# ==========================================
 # ГОЛОВНА ЛОГІКА
 # ==========================================
 
 def main():
+    # 1. ПЕРЕВІРКА ТОКЕНА ДЛЯ КАБІНЕТУ БАТЬКІВ (без логіну)
+    if "token" in st.query_params:
+        render_parent_cabinet(st.query_params["token"])
+        return
+
+    # 2. АВТОРИЗАЦІЯ (RBAC)
+    if 'logged_in' not in st.session_state:
+        st.session_state.logged_in = False
+
+    if not st.session_state.logged_in:
+        render_login_screen()
+        return
+
+    # 3. ЗАВАНТАЖЕННЯ ДАНИХ З УРАХУВАННЯМ РОЛІ
     df = load_athletes_with_per()
+    user_info = st.session_state.user_info
+    
+    # Якщо це тренер, фільтруємо DataFrame, щоб він бачив лише своїх гравців
+    if user_info['role'] == 'coach':
+        if 'coach' in df.columns:
+            df = df[df['coach'] == user_info['coach_group']]
 
     with st.sidebar:
         st.title("🏆 OmniSport Pro")
         st.caption("Performance Analytics v12.1 — SQLite Edition")
+        
+        # Відображення профілю користувача
+        st.info(f"👤 Користувач: **{user_info['username']}** ({user_info['role'].upper()})")
+        if st.button("🚪 Вийти", use_container_width=True):
+            st.session_state.logged_in = False
+            st.rerun()
+            
+        st.divider()
 
+        # 4. МОДУЛЬ GDPR (Приховування імен)
+        st.subheader("🛡️ Безпека даних")
+        gdpr_mode = st.toggle("🔒 Анонімний режим (GDPR)", value=False, help="Приховати справжні імена дітей у звітах для захисту персональних даних.")
+        if gdpr_mode:
+            df = anonymize_data(df)
+            st.warning("⚠️ Увімкнено режим конфіденційності. Імена приховані.")
+        
+        st.divider()
+
+        # 5. СТАТУС БАЗИ ДАНИХ
         conn = get_connection()
         db_size = os.path.getsize(DB_PATH) / 1024 if os.path.exists(DB_PATH) else 0
         athlete_count = conn.execute("SELECT COUNT(*) FROM athletes").fetchone()[0]
@@ -415,6 +573,7 @@ def main():
 
         st.divider()
 
+        # 6. ЗАВАНТАЖЕННЯ ДАНИХ З ФАЙЛУ
         with st.expander("📂 Завантажити свої дані", expanded=False):
             uploaded_file = st.file_uploader(
                 "CSV або Excel з даними команди",
@@ -449,6 +608,8 @@ def main():
                 st.rerun()
 
         st.divider()
+        
+        # 7. НАВІГАЦІЙНЕ МЕНЮ
         menu = [
             "🏠 Дашборд",
             "📊 Командна аналітика",
@@ -475,8 +636,9 @@ def main():
         st.info("[Sport.ua](https://sport.ua/uk)")
 
         st.divider()
-        st.info(f"Активних гравців: **{len(df)}**")
+        st.info(f"Активних гравців (Ваша група): **{len(df)}**")
 
+    # 8. МАРШРУТИЗАЦІЯ ВІДОБРАЖЕННЯ
     if choice == "🏠 Дашборд": render_dashboard(df)
     elif choice == "📊 Командна аналітика": render_team_analytics(df)
     elif choice == "👥 База гравців": render_crm(df)
