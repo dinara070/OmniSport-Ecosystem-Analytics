@@ -63,9 +63,9 @@ def init_db():
     # Базові користувачі (пароль = логін для демо)
     # Ролі: admin (бачить всіх), coach (бачить лише свою групу)
     default_users = [
-        ("admin", hashlib.sha256("admin".encode()).hexdigest(), "admin", "Всі"),
-        ("trener1", hashlib.sha256("trener1".encode()).hexdigest(), "coach", "Тренер 1"),
-        ("trener2", hashlib.sha256("trener2".encode()).hexdigest(), "coach", "Тренер 2")
+        ("admin", hashlib.sha256("admin2026".encode()).hexdigest(), "admin", "Всі"),
+        ("trener1", hashlib.sha256("trener1_26".encode()).hexdigest(), "coach", "Тренер 1"),
+        ("trener2", hashlib.sha256("trener2_26".encode()).hexdigest(), "coach", "Тренер 2")
     ]
     c.execute("SELECT COUNT(*) FROM users")
     if c.fetchone()[0] == 0:
@@ -528,7 +528,7 @@ def render_login_screen():
     with st.expander("ℹ️ Тестові облікові записи (для демо)", expanded=False):
         demo_accounts = pd.DataFrame({
             "Логін": ["admin", "trener1"],
-            "Пароль": ["admin", "trener1"],
+            "Пароль": ["admin2026", "trener1_26"],
             "Роль": ["🔑 Адміністратор", "🧑‍🏫 Тренер"]
         })
         st.table(demo_accounts.set_index("Логін"))
