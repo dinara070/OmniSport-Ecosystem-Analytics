@@ -488,6 +488,24 @@ def get_sport_emoji(sport: str) -> str:
     return mapping.get(sport, "🏅")
 
 
+def get_daily_quote():
+    """Повертає цитату дня на основі поточного дня року."""
+    quotes = [
+        ("«Талант виграє ігри, але командна робота та інтелект виграють чемпіонати.»", "Майкл Джордан"),
+        ("«Ви промахуєтеся у 100% випадків, коли не робите кидок.»", "Вейн Гретцкі"),
+        ("«Чим важча перемога, тим більша радість від неї.»", "Пеле"),
+        ("«Я не боюся того, хто вивчає 10 000 різних ударів. Я боюся того, хто вивчає один удар 10 000 разів.»", "Брюс Лі"),
+        ("«Успіх — це не випадковість. Це важка робота, наполегливість, навчання та любов до своєї справи.»", "Пеле"),
+        ("«Справжній чемпіон — це той, хто встає, коли не може.»", "Джек Демпсі"),
+        ("«Важко перемогти людину, яка ніколи не здається.»", "Бейб Рут"),
+        ("«Перемога — це ще не все, але бажання перемогти — це все.»", "Вінс Ломбарді"),
+        ("«Те, що здається неможливим сьогодні, стане вашою розминкою завтра.»", "Невідомий автор")
+    ]
+    # Використовуємо номер поточного дня у році для циклічної зміни цитат
+    day_of_year = datetime.now().timetuple().tm_yday
+    return quotes[day_of_year % len(quotes)]
+
+
 # ==========================================
 # МОДУЛЬ БЕЗПЕКИ ТА АВТОРИЗАЦІЇ
 # ==========================================
@@ -541,9 +559,7 @@ def anonymize_data(df):
         df_anon["Ім'я"] = df_anon["Ім'я"].apply(lambda x: str(x)[0] + "***" if pd.notnull(x) else "Невідомо")
     return df_anon
 
-# ==========================================
-# КАБІНЕТ БАТЬКІВ
-# ==========================================
+
 # ==========================================
 # КАБІНЕТ БАТЬКІВ
 # ==========================================
@@ -630,8 +646,21 @@ def main():
         st.title("🏆 OmniSport Pro")
         st.caption("Performance Analytics v12.1 — SQLite Edition")
         
-        # Відображення профілю користувача
-        st.info(f"👤 Користувач: **{user_info['username']}** ({user_info['role'].upper()})")
+        # --- НОВЕ: Персоналізоване вітання залежно від часу ---
+        current_hour = datetime.now().hour
+        if 5 <= current_hour < 12:
+            greeting_text = "🌅 Доброго ранку"
+        elif 12 <= current_hour < 18:
+            greeting_text = "☀️ Доброго дня"
+        elif 18 <= current_hour < 23:
+            greeting_text = "🌆 Доброго вечора"
+        else:
+            greeting_text = "🌙 Доброї ночі"
+
+        # Відображення профілю користувача з новим вітанням
+        st.markdown(f"### {greeting_text}, **{user_info['username']}**!")
+        st.info(f"👤 Роль у системі: **{user_info['role'].upper()}**")
+        
         if st.button("🚪 Вийти", use_container_width=True):
             st.session_state.logged_in = False
             st.rerun()
@@ -753,6 +782,27 @@ def main():
 # ==========================================
 def render_dashboard(df):
     st.title("🏠 Аналітична панель")
+
+    # --- НОВЕ: Стильна градієнтна картка «Цитата дня» ---
+    quote, author = get_daily_quote()
+    st.markdown(f"""
+        <div style="
+            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+            padding: 25px 30px;
+            border-radius: 12px;
+            text-align: center;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+            margin-bottom: 25px;
+            border-left: 5px solid #FFD740;
+        ">
+            <h4 style="margin-top: 0; margin-bottom: 15px; font-style: italic; color: #ffffff; text-shadow: 1px 1px 2px rgba(0,0,0,0.3); font-weight: 500;">
+                {quote}
+            </h4>
+            <p style="margin-bottom: 0; font-weight: bold; color: #FFD740; font-size: 1.1em; letter-spacing: 0.5px;">
+                — {author}
+            </p>
+        </div>
+    """, unsafe_allow_html=True)
 
     with st.expander("👋 Вітаємо в командному центрі OmniSport Pro!", expanded=True):
         st.markdown("""
@@ -920,9 +970,6 @@ def render_team_analytics(df):
     st.dataframe(sport_avg.style.background_gradient(cmap='YlGn'), use_container_width=True)
 
 
-# ==========================================
-# 2. БАЗА ГРАВЦІВ (CRM)
-# ==========================================
 # ==========================================
 # 2. БАЗА ГРАВЦІВ (CRM + ДЮСШ)
 # ==========================================
@@ -1450,7 +1497,6 @@ def render_media_integration():
 # ==========================================
 # 5.5 CV АНАЛІЗ ВІДЕО
 # ==========================================
-
 def simulate_tracking_data_internal(num_players_per_team=5, num_frames=300, fps=25):
     import math
     teams = {"Червона команда": [], "Синя команда": []}
@@ -1988,7 +2034,6 @@ def render_cv_analysis():
 # ==========================================
 # 5.7 OCR ТАКТИЧНИХ ФОТО
 # ==========================================
-
 def analyze_tactical_photo_simulation(db_df):
     np.random.seed(42)
     num_red = random.randint(3, 6)
