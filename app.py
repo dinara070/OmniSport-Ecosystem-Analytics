@@ -504,12 +504,14 @@ def authenticate(username, password):
 
 def render_login_screen():
     st.title("🔒 Вхід у систему OmniSport Pro")
+    st.caption("OmniSport Pro — Performance Analytics · Вхід до системи")
+
     with st.container():
-        st.info("💡 **Демо доступи:** логін `admin` (пароль `admin`) або `trener1` (пароль `trener1`)")
+        st.subheader("🔑 Авторизація")
         with st.form("login_form"):
-            user = st.text_input("Логін")
-            pwd = st.text_input("Пароль", type="password")
-            submitted = st.form_submit_button("Увійти", type="primary", use_container_width=True)
+            user = st.text_input("Логін користувача", placeholder="Введіть логін...")
+            pwd = st.text_input("Пароль", type="password", placeholder="Введіть пароль...")
+            submitted = st.form_submit_button("▶️ Увійти до системи", type="primary", use_container_width=True)
             if submitted:
                 user_data = authenticate(user, pwd)
                 if user_data:
@@ -518,6 +520,18 @@ def render_login_screen():
                     st.rerun()
                 else:
                     st.error("❌ Невірний логін або пароль")
+
+    st.markdown("---")
+    st.caption("🔒 Система розмежування доступу за ролями.")
+    st.caption("Для отримання облікових даних зверніться до адміністратора.")
+
+    with st.expander("ℹ️ Тестові облікові записи (для демо)", expanded=False):
+        demo_accounts = pd.DataFrame({
+            "Логін": ["admin", "trener1"],
+            "Пароль": ["admin", "trener1"],
+            "Роль": ["🔑 Адміністратор", "🧑‍🏫 Тренер"]
+        })
+        st.table(demo_accounts.set_index("Логін"))
 
 def anonymize_data(df):
     """Шифрує імена дітей для дотримання GDPR"""
