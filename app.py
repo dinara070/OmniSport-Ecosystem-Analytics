@@ -44,6 +44,24 @@ DEFAULT_DATA = pd.DataFrame({
 
 WEEKDAY_NAMES = ["Понеділок", "Вівторок", "Середа", "Четвер", "П'ятниця", "Субота", "Неділя"]
 
+POSITION_OPTIONS = {
+    "Футбол": ["Не вказано", "Воротар", "Захисник", "Півзахисник", "Нападник"],
+    "Волейбол": ["Не вказано", "Зв'язуючий", "Діагональний", "Догравальник", "Центральний блокуючий", "Ліберо"],
+    "Баскетбол": ["Не вказано", "Розігруючий", "Атакуючий захисник", "Легкий форвард", "Важкий форвард", "Центровий"],
+    "Теніс": ["Не вказано", "Одиночний розряд", "Парний розряд"],
+    "Бокс": ["Не вказано", "Легка вага", "Середня вага", "Важка вага"],
+    "Плавання": ["Не вказано", "Вільний стиль", "Брас", "Батерфляй", "Комплекс"],
+    "Велоспорт": ["Не вказано", "Спринтер", "Гонщик на витривалість"],
+    "Дзюдо": ["Не вказано", "Легка вага", "Середня вага", "Важка вага"],
+    "Біг": ["Не вказано", "Спринтер", "Стаєр", "Марафонець"],
+}
+DEFAULT_POSITIONS = ["Не вказано"]
+
+
+def get_position_options(sport: str) -> list:
+    return POSITION_OPTIONS.get(sport, DEFAULT_POSITIONS)
+
+
 # ==========================================
 # БАЗА ДАНИХ — SQLite
 # ==========================================
@@ -153,6 +171,46 @@ def init_db():
         )
     """)
 
+    # Історія травм (медичний профіль)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS injury_history (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            athlete       TEXT,
+            injury_type   TEXT,
+            injury_date   TEXT,
+            recovery_days INTEGER DEFAULT 0,
+            notes         TEXT,
+            created_at    TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # Портфоліо гравця (фото/відео виступів)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS athlete_portfolio (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            athlete     TEXT,
+            url         TEXT,
+            media_type  TEXT,
+            description TEXT,
+            created_at  TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # Історична статистика команди (для порівняння з минулими сезонами)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS historical_team_stats (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            season      TEXT,
+            sport       TEXT,
+            avg_speed   REAL,
+            avg_stamina REAL,
+            avg_power   REAL,
+            avg_per     REAL,
+            notes       TEXT,
+            created_at  TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     migrations = [
         "ALTER TABLE athletes ADD COLUMN coach TEXT DEFAULT 'Тренер 1'",
         "ALTER TABLE athletes ADD COLUMN parent_token TEXT",
@@ -160,7 +218,12 @@ def init_db():
         "ALTER TABLE athletes ADD COLUMN teamwork INTEGER DEFAULT 50",
         "ALTER TABLE athletes ADD COLUMN diligence INTEGER DEFAULT 50",
         "ALTER TABLE athletes ADD COLUMN birthday TEXT",
-        "ALTER TABLE athletes ADD COLUMN medical_expiry TEXT"
+        "ALTER TABLE athletes ADD COLUMN medical_expiry TEXT",
+        "ALTER TABLE athletes ADD COLUMN position TEXT DEFAULT 'Не вказано'",
+        "ALTER TABLE athletes ADD COLUMN reaction INTEGER DEFAULT 50",
+        "ALTER TABLE athletes ADD COLUMN blood_type TEXT",
+        "ALTER TABLE athletes ADD COLUMN allergies TEXT",
+        "ALTER TABLE athletes ADD COLUMN contract_end TEXT"
     ]
 
     for mig in migrations:
@@ -191,6 +254,24 @@ def init_db():
                       (demo_bday, demo_expiry, row['id']))
         conn.commit()
 
+    # Демо-заповнення позиції, реакції та дати закінчення контракту, якщо ще не задані
+    rows_wo_position = c.execute(
+        "SELECT id, sport FROM athletes WHERE position IS NULL OR position = 'Не вказано' OR contract_end IS NULL"
+    ).fetchall()
+    if rows_wo_position:
+        today = datetime.today()
+        for row in rows_wo_position:
+            sport_positions = POSITION_OPTIONS.get(row['sport'], DEFAULT_POSITIONS)
+            real_positions = [p for p in sport_positions if p != "Не вказано"] or ["Не вказано"]
+            demo_position = random.choice(real_positions)
+            demo_reaction = random.randint(45, 92)
+            demo_contract = (today + timedelta(days=random.choice([-10, 15, 25, 45, 120, 300]))).strftime("%Y-%m-%d")
+            c.execute(
+                "UPDATE athletes SET position = ?, reaction = ?, contract_end = ? WHERE id = ?",
+                (demo_position, demo_reaction, demo_contract, row['id'])
+            )
+        conn.commit()
+
     # Демо-розклад тренувань
     count_tr = c.execute("SELECT COUNT(*) FROM trainings").fetchone()[0]
     if count_tr == 0:
@@ -203,6 +284,20 @@ def init_db():
             ("Тренер 2", 4, "17:00", "Спортзал №2"),
         ]
         c.executemany("INSERT INTO trainings (coach_group, weekday, time, location) VALUES (?, ?, ?, ?)", demo_trainings)
+        conn.commit()
+
+    # Демо-дані минулого сезону (для порівняння з референсом у "Командній аналітиці")
+    count_hist = c.execute("SELECT COUNT(*) FROM historical_team_stats").fetchone()[0]
+    if count_hist == 0:
+        demo_historical = [
+            ("2024/2025", "Футбол", 27.0, 78.0, 72.0, 52.0, "Підсумкові показники минулого сезону (демо)"),
+            ("2023/2024", "Футбол", 25.5, 74.0, 69.0, 47.0, "Сезон перед попереднім (демо)"),
+        ]
+        c.executemany(
+            """INSERT INTO historical_team_stats (season, sport, avg_speed, avg_stamina, avg_power, avg_per, notes)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            demo_historical
+        )
         conn.commit()
 
     conn.close()
@@ -234,7 +329,10 @@ def db_load_athletes() -> pd.DataFrame:
                workload AS "Навантаження_7днів", number AS "Номер",
                coach AS "Тренер", parent_token AS "Токен",
                discipline AS "Дисципліна", teamwork AS "Командна робота", diligence AS "Старанність",
-               birthday AS "День народження", medical_expiry AS "Мед.довідка до"
+               birthday AS "День народження", medical_expiry AS "Мед.довідка до",
+               position AS "Позиція", reaction AS "Реакція",
+               blood_type AS "Група крові", allergies AS "Алергії",
+               contract_end AS "Контракт до"
         FROM athletes ORDER BY id
     """, conn)
     conn.close()
@@ -242,14 +340,15 @@ def db_load_athletes() -> pd.DataFrame:
 
 
 def db_add_athlete(name, age, sport, matches, points, speed, stamina, power, workload, number,
-                    coach_group="Тренер 1", birthday=None, medical_expiry=None):
+                    coach_group="Тренер 1", birthday=None, medical_expiry=None,
+                    position="Не вказано", reaction=50, blood_type=None, allergies=None, contract_end=None):
     conn = get_connection()
     conn.execute("""
         INSERT INTO athletes (name, age, sport, matches, points, speed, stamina, power, workload, number,
-                               coach, birthday, medical_expiry)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                               coach, birthday, medical_expiry, position, reaction, blood_type, allergies, contract_end)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (name, age, sport, matches, points, speed, stamina, power, workload, number,
-          coach_group, birthday, medical_expiry))
+          coach_group, birthday, medical_expiry, position, reaction, blood_type, allergies, contract_end))
     conn.commit()
     conn.close()
 
@@ -281,13 +380,130 @@ def db_update_soft_skills(athlete_name: str, disc: int, team: int, dil: int):
     conn.close()
 
 
-def db_update_athlete_lifecycle(athlete_name: str, birthday: str, medical_expiry: str):
-    """Оновлює день народження (MM-DD) та дату закінчення медичної довідки (YYYY-MM-DD)."""
+def db_update_athlete_lifecycle(athlete_name: str, birthday: str, medical_expiry: str, contract_end: str = None):
+    """Оновлює день народження (MM-DD), дату закінчення медичної довідки та контракту (YYYY-MM-DD)."""
+    conn = get_connection()
+    if contract_end is not None:
+        conn.execute("""
+            UPDATE athletes SET birthday = ?, medical_expiry = ?, contract_end = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE name = ?
+        """, (birthday, medical_expiry, contract_end, athlete_name))
+    else:
+        conn.execute("""
+            UPDATE athletes SET birthday = ?, medical_expiry = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE name = ?
+        """, (birthday, medical_expiry, athlete_name))
+    conn.commit()
+    conn.close()
+
+
+def db_update_athlete_position(athlete_name: str, position: str, reaction: int):
     conn = get_connection()
     conn.execute("""
-        UPDATE athletes SET birthday = ?, medical_expiry = ?, updated_at = CURRENT_TIMESTAMP
+        UPDATE athletes SET position = ?, reaction = ?, updated_at = CURRENT_TIMESTAMP
         WHERE name = ?
-    """, (birthday, medical_expiry, athlete_name))
+    """, (position, reaction, athlete_name))
+    conn.commit()
+    conn.close()
+
+
+def db_update_medical_profile(athlete_name: str, blood_type: str, allergies: str):
+    conn = get_connection()
+    conn.execute("""
+        UPDATE athletes SET blood_type = ?, allergies = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE name = ?
+    """, (blood_type, allergies, athlete_name))
+    conn.commit()
+    conn.close()
+
+
+# ---------- ІСТОРІЯ ТРАВМ ----------
+
+def db_save_injury(athlete: str, injury_type: str, injury_date: str, recovery_days: int, notes: str):
+    conn = get_connection()
+    conn.execute("""
+        INSERT INTO injury_history (athlete, injury_type, injury_date, recovery_days, notes)
+        VALUES (?, ?, ?, ?, ?)
+    """, (athlete, injury_type, injury_date, recovery_days, notes))
+    conn.commit()
+    conn.close()
+
+
+def db_load_injuries(athlete: str = None) -> list:
+    conn = get_connection()
+    if athlete:
+        rows = conn.execute(
+            "SELECT * FROM injury_history WHERE athlete = ? ORDER BY injury_date DESC", (athlete,)
+        ).fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM injury_history ORDER BY injury_date DESC").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def db_delete_injury(injury_id: int):
+    conn = get_connection()
+    conn.execute("DELETE FROM injury_history WHERE id = ?", (injury_id,))
+    conn.commit()
+    conn.close()
+
+
+# ---------- ПОРТФОЛІО ГРАВЦЯ ----------
+
+def db_save_portfolio_item(athlete: str, url: str, media_type: str, description: str):
+    conn = get_connection()
+    conn.execute("""
+        INSERT INTO athlete_portfolio (athlete, url, media_type, description)
+        VALUES (?, ?, ?, ?)
+    """, (athlete, url, media_type, description))
+    conn.commit()
+    conn.close()
+
+
+def db_load_portfolio(athlete: str) -> list:
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM athlete_portfolio WHERE athlete = ? ORDER BY created_at DESC", (athlete,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def db_delete_portfolio_item(item_id: int):
+    conn = get_connection()
+    conn.execute("DELETE FROM athlete_portfolio WHERE id = ?", (item_id,))
+    conn.commit()
+    conn.close()
+
+
+# ---------- ІСТОРИЧНА СТАТИСТИКА КОМАНДИ (МИНУЛІ СЕЗОНИ) ----------
+
+def db_save_historical_stats(season: str, sport: str, avg_speed: float, avg_stamina: float,
+                              avg_power: float, avg_per: float, notes: str = ""):
+    conn = get_connection()
+    conn.execute("""
+        INSERT INTO historical_team_stats (season, sport, avg_speed, avg_stamina, avg_power, avg_per, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (season, sport, avg_speed, avg_stamina, avg_power, avg_per, notes))
+    conn.commit()
+    conn.close()
+
+
+def db_load_historical_stats(sport: str = None) -> list:
+    conn = get_connection()
+    if sport:
+        rows = conn.execute(
+            "SELECT * FROM historical_team_stats WHERE sport = ? ORDER BY created_at DESC", (sport,)
+        ).fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM historical_team_stats ORDER BY created_at DESC").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def db_delete_historical_stats(stat_id: int):
+    conn = get_connection()
+    conn.execute("DELETE FROM historical_team_stats WHERE id = ?", (stat_id,))
     conn.commit()
     conn.close()
 
@@ -715,7 +931,7 @@ def get_days_to_expiry(expiry_str):
 
 
 def get_today_overview(df: pd.DataFrame, coach_group: str = None):
-    """Збирає дані для віджета «Що сьогодні»: тренування, дні народження, мед.довідки."""
+    """Збирає дані для віджета «Що сьогодні»: тренування, дні народження, мед.довідки, контракти."""
     today = datetime.today()
     today_weekday = today.weekday()  # 0 = Понеділок
 
@@ -732,6 +948,8 @@ def get_today_overview(df: pd.DataFrame, coach_group: str = None):
     birthdays_soon = []
     medical_expiring = []
     medical_expired = []
+    contracts_expiring = []
+    contracts_expired = []
 
     if not df.empty:
         for _, row in df.iterrows():
@@ -747,9 +965,18 @@ def get_today_overview(df: pd.DataFrame, coach_group: str = None):
                 elif days_to_expiry <= 30:
                     medical_expiring.append({"name": name, "days": days_to_expiry})
 
+            days_to_contract = get_days_to_expiry(row.get("Контракт до"))
+            if days_to_contract is not None:
+                if days_to_contract < 0:
+                    contracts_expired.append({"name": name, "days": abs(days_to_contract)})
+                elif days_to_contract <= 30:
+                    contracts_expiring.append({"name": name, "days": days_to_contract})
+
     birthdays_soon.sort(key=lambda x: x['days'])
     medical_expiring.sort(key=lambda x: x['days'])
     medical_expired.sort(key=lambda x: x['days'])
+    contracts_expiring.sort(key=lambda x: x['days'])
+    contracts_expired.sort(key=lambda x: x['days'])
 
     return {
         "weekday_name": WEEKDAY_NAMES[today_weekday],
@@ -758,19 +985,21 @@ def get_today_overview(df: pd.DataFrame, coach_group: str = None):
         "birthdays": birthdays_soon,
         "medical_expiring": medical_expiring,
         "medical_expired": medical_expired,
+        "contracts_expiring": contracts_expiring,
+        "contracts_expired": contracts_expired,
     }
 
 
 def render_today_widget(df: pd.DataFrame):
-    """Віджет «Що сьогодні» — тренування, дні народження, мед.довідки, що спливають."""
+    """Віджет «Що сьогодні» — тренування, дні народження, мед.довідки, контракти, що спливають."""
     user_info = st.session_state.get('user_info', {})
     coach_group = user_info.get('coach_group', 'Всі')
     info = get_today_overview(df, coach_group)
 
     st.subheader(f"📅 Що сьогодні · {info['weekday_name']}, {info['date_str']}")
-    st.caption("Швидкий огляд дня: заплановані тренування, найближчі дні народження та довідки, термін дії яких спливає.")
+    st.caption("Швидкий огляд дня: заплановані тренування, найближчі дні народження, довідки та контракти, термін дії яких спливає.")
 
-    col_tr, col_bday, col_med = st.columns(3)
+    col_tr, col_bday, col_med, col_contract = st.columns(4)
 
     with col_tr:
         st.markdown("**🏋️ Тренування сьогодні**")
@@ -801,6 +1030,17 @@ def render_today_widget(df: pd.DataFrame):
                 st.warning(f"⚠️ **{m['name']}** — спливає через {m['days']} дн.")
         if not info['medical_expired'] and not info['medical_expiring']:
             st.info("Усі довідки чинні щонайменше 30 днів.")
+
+    with col_contract:
+        st.markdown("**📄 Контракти**")
+        if info['contracts_expired']:
+            for c in info['contracts_expired']:
+                st.error(f"❌ **{c['name']}** — контракт прострочено на {c['days']} дн.")
+        if info['contracts_expiring']:
+            for c in info['contracts_expiring']:
+                st.warning(f"⚠️ **{c['name']}** — контракт закінчується через {c['days']} дн.")
+        if not info['contracts_expired'] and not info['contracts_expiring']:
+            st.info("Усі контракти чинні щонайменше 30 днів.")
 
 
 def render_gauges(df: pd.DataFrame):
@@ -1250,26 +1490,48 @@ def render_team_analytics(df):
     st.markdown("""
     Цей розділ дає змогу побачити команду як єдиний організм.
     Аналізуйте розподіл за видами спорту, порівнюйте середні показники з ідеальними значеннями
-    та знаходьте «слабкі місця» у складі, що потребують укріплення.
+    або з результатами минулого сезону, фільтруйте по ігрових позиціях та
+    знаходьте «слабкі місця» у складі, що потребують укріплення.
     """)
 
     if df.empty:
         st.warning("Немає даних для аналізу.")
         return
 
+    # ---------- ФІЛЬТР ПО ПОЗИЦІЯХ ----------
+    st.subheader("🎯 Фільтр по позиціях")
+    st.caption("Оберіть одну або декілька позицій — уся аналітика нижче буде розрахована лише для обраної групи гравців.")
+    if 'Позиція' in df.columns:
+        position_options = sorted([p for p in df['Позиція'].dropna().unique().tolist() if p])
+    else:
+        position_options = []
+
+    if position_options:
+        selected_positions = st.multiselect(
+            "Позиції для аналізу:", position_options, default=position_options
+        )
+        analysis_df = df[df['Позиція'].isin(selected_positions)] if selected_positions else df
+    else:
+        st.info("Позиції гравців ще не заповнені — фільтр застосує весь склад. Позицію можна вказати в розділі «👥 База гравців».")
+        analysis_df = df
+
+    if analysis_df.empty:
+        st.warning("Для обраних позицій немає гравців.")
+        return
+
     c1, c2, c3 = st.columns(3)
-    c1.metric("Середній вік команди", f"{df['Вік'].mean():.1f} років")
-    avg_speed = df['Швидкість'].mean()
+    c1.metric("Середній вік (обрані)", f"{analysis_df['Вік'].mean():.1f} років")
+    avg_speed = analysis_df['Швидкість'].mean()
     c2.metric("Середня швидкість", f"{avg_speed:.1f} км/год", f"{avg_speed - 30:.1f} від ідеалу (30)")
-    c3.metric("Середній командний PER", f"{df['PER (Рейтинг)'].mean():.1f}")
+    c3.metric("Середній командний PER", f"{analysis_df['PER (Рейтинг)'].mean():.1f}")
 
     st.divider()
     col_pie, col_bar = st.columns(2)
 
     with col_pie:
         st.subheader("Розподіл за видами спорту")
-        st.caption("Кругова діаграма відображає, які види спорту представлені в базі. Різноманітність допомагає у побудові міждисциплінарних тренувань.")
-        sport_counts = df['Вид спорту'].value_counts()
+        st.caption("Кругова діаграма відображає, які види спорту представлені серед обраних гравців.")
+        sport_counts = analysis_df['Вид спорту'].value_counts()
         fig1, ax1 = plt.subplots(figsize=(6, 4))
         ax1.pie(sport_counts, labels=sport_counts.index, autopct='%1.1f%%',
                 startangle=90, colors=plt.cm.Pastel1.colors, textprops=dict(color="w"))
@@ -1281,22 +1543,76 @@ def render_team_analytics(df):
         plt.close(fig1)
 
     with col_bar:
-        st.subheader("Поточні показники vs Ідеал")
-        st.caption("Порівняння середніх командних показників з еталонними значеннями професійної команди.")
+        st.subheader("📅 Порівняння з референсом")
+        st.caption("Порівняйте поточні середні показники з ідеальними значеннями АБО з результатами минулого сезону.")
+
+        historical_list = db_load_historical_stats()
+        reference_labels = ["🎯 Ідеальні значення (професійна команда)"] + [
+            f"📅 {h['season']} · {h['sport']}" for h in historical_list
+        ]
+        selected_reference = st.selectbox("Референс:", reference_labels, key="ta_reference")
+
+        if selected_reference == reference_labels[0]:
+            ref_speed, ref_stamina, ref_power = 30.0, 85.0, 80.0
+        else:
+            h = historical_list[reference_labels.index(selected_reference) - 1]
+            ref_speed, ref_stamina, ref_power = h['avg_speed'], h['avg_stamina'], h['avg_power']
+
         avg_stats = pd.DataFrame({
             "Показник": ["Витривалість", "Сила", "Швидкість"],
-            "Команда": [df['Витривалість'].mean(), df['Сила'].mean(), df['Швидкість'].mean()],
-            "Ідеал": [85.0, 80.0, 30.0]
+            "Команда": [analysis_df['Витривалість'].mean(), analysis_df['Сила'].mean(), analysis_df['Швидкість'].mean()],
+            "Референс": [ref_stamina, ref_power, ref_speed]
         }).set_index("Показник")
-        st.bar_chart(avg_stats, color=["#448AFF", "#FF5252"])
+        st.bar_chart(avg_stats, color=["#448AFF", "#FFC107"])
+
+    with st.expander("➕ Додати дані минулого сезону (для майбутніх порівнянь)", expanded=False):
+        st.caption("Введіть середні показники команди за попередній сезон — вони з'являться у списку референсів вище.")
+        with st.form("add_historical_form"):
+            hc1, hc2 = st.columns(2)
+            season_name = hc1.text_input("Сезон (напр. 2024/2025)")
+            sport_hist_options = sorted(df['Вид спорту'].dropna().unique().tolist()) or ["Футбол"]
+            sport_hist = hc2.selectbox("Вид спорту", sport_hist_options)
+
+            hc3, hc4, hc5, hc6 = st.columns(4)
+            h_speed = hc3.number_input("Сер. швидкість", 0.0, 50.0, 28.0)
+            h_stamina = hc4.number_input("Сер. витривалість", 0, 100, 75)
+            h_power = hc5.number_input("Сер. сила", 0, 100, 75)
+            h_per = hc6.number_input("Сер. PER", 0.0, 150.0, 60.0)
+            h_notes = st.text_area("Нотатки про сезон", placeholder="Напр. фінал чемпіонату області, склад із 14 гравців...")
+
+            if st.form_submit_button("💾 Зберегти сезон", type="primary"):
+                if season_name.strip():
+                    db_save_historical_stats(season_name, sport_hist, h_speed, h_stamina, h_power, h_per, h_notes)
+                    st.success(f"✅ Сезон «{season_name}» збережено! Тепер доступний у списку референсів.")
+                    st.rerun()
+                else:
+                    st.error("⚠️ Вкажіть назву сезону.")
+
+        if historical_list:
+            st.markdown("**📚 Збережені сезони:**")
+            hist_df_display = pd.DataFrame(historical_list)[
+                ["season", "sport", "avg_speed", "avg_stamina", "avg_power", "avg_per", "notes", "created_at"]
+            ].rename(columns={
+                "season": "Сезон", "sport": "Спорт", "avg_speed": "Швидкість",
+                "avg_stamina": "Витривалість", "avg_power": "Сила", "avg_per": "PER",
+                "notes": "Нотатки", "created_at": "Додано"
+            })
+            st.dataframe(hist_df_display, use_container_width=True, hide_index=True)
+
+            del_hist_options = {f"{h['season']} · {h['sport']}": h['id'] for h in historical_list}
+            del_hist_choice = st.selectbox("Видалити сезон:", ["—"] + list(del_hist_options.keys()), key="del_hist_select")
+            if del_hist_choice != "—" and st.button("🗑️ Видалити обраний сезон"):
+                db_delete_historical_stats(del_hist_options[del_hist_choice])
+                st.success("✅ Сезон видалено.")
+                st.rerun()
 
     st.divider()
     col_top, col_bot = st.columns(2)
 
     with col_top:
         st.subheader("🏆 Топ-3 гравці за PER")
-        st.caption("Найефективніші гравці команди за комплексним рейтингом.")
-        top3 = df.nlargest(3, 'PER (Рейтинг)')[["Ім'я", "Вид спорту", "PER (Рейтинг)"]]
+        st.caption("Найефективніші гравці серед обраних позицій.")
+        top3 = analysis_df.nlargest(3, 'PER (Рейтинг)')[["Ім'я", "Вид спорту", "PER (Рейтинг)"]]
         for i, (_, row) in enumerate(top3.iterrows()):
             medals = ["🥇", "🥈", "🥉"]
             player_name = row["Ім'я"]
@@ -1307,7 +1623,7 @@ def render_team_analytics(df):
     with col_bot:
         st.subheader("📈 Потенціал для росту")
         st.caption("Гравці з найнижчим PER — тут найбільший простір для розвитку.")
-        bot3 = df.nsmallest(3, 'PER (Рейтинг)')[["Ім'я", "Вид спорту", "PER (Рейтинг)"]]
+        bot3 = analysis_df.nsmallest(3, 'PER (Рейтинг)')[["Ім'я", "Вид спорту", "PER (Рейтинг)"]]
         for _, row in bot3.iterrows():
             player_name = row["Ім'я"]
             sport = row['Вид спорту']
@@ -1317,18 +1633,38 @@ def render_team_analytics(df):
     st.divider()
     st.subheader("📐 Середні показники за видами спорту")
     st.caption("Порівняйте, як відрізняються фізичні профілі різних дисциплін у вашому складі.")
-    sport_avg = df.groupby('Вид спорту')[['Швидкість', 'Витривалість', 'Сила', 'PER (Рейтинг)']].mean().round(1)
+    sport_avg = analysis_df.groupby('Вид спорту')[['Швидкість', 'Витривалість', 'Сила', 'PER (Рейтинг)']].mean().round(1)
     st.dataframe(sport_avg.style.background_gradient(cmap='YlGn'), use_container_width=True)
+
+    st.divider()
+    st.subheader("🧩 Аналітика за позиціями")
+    st.caption("Для кожної позиції ключові метрики відрізняються — наприклад, для воротарів важливіша **Реакція**, ніж дистанція/швидкість.")
+    if 'Позиція' in analysis_df.columns and 'Реакція' in analysis_df.columns and position_options:
+        position_avg = analysis_df.groupby('Позиція')[['Швидкість', 'Витривалість', 'Сила', 'Реакція', 'PER (Рейтинг)']].mean().round(1)
+        st.dataframe(position_avg.style.background_gradient(cmap='PuBu'), use_container_width=True)
+
+        goalkeepers = analysis_df[analysis_df['Позиція'] == 'Воротар']
+        if not goalkeepers.empty:
+            st.info(
+                f"🥅 **Воротарі ({len(goalkeepers)}):** середня **Реакція** = {goalkeepers['Реакція'].mean():.1f} "
+                f"(пріоритетний показник для цієї позиції), середня Витривалість = {goalkeepers['Витривалість'].mean():.1f}, "
+                f"середня Швидкість = {goalkeepers['Швидкість'].mean():.1f} км/год (менш критична для воротаря)."
+            )
+    else:
+        position_avg = pd.DataFrame()
+        st.info("Позиції гравців ще не заповнені — заповніть їх у розділі «👥 База гравців», щоб побачити позиційну аналітику.")
 
     st.divider()
     render_export_import_block(
         section_key="team_analytics",
         export_data={
             "Середні показники за видами спорту": sport_avg.reset_index(),
-            "Повна команда": df
+            "Аналітика за позиціями": position_avg.reset_index() if not position_avg.empty else pd.DataFrame(),
+            "Історичні сезони (референс)": pd.DataFrame(historical_list),
+            "Обрана вибірка гравців": analysis_df
         },
         import_config=None,
-        note="Ці дані є розрахунковими (агрегати по команді), тому доступний лише експорт."
+        note="Ці дані є розрахунковими (агрегати по команді), тому доступний лише експорт. Дані минулих сезонів додаються через форму вище."
     )
 
 
@@ -1343,9 +1679,10 @@ def render_crm(df):
     Усі зміни зберігаються в базі даних.
     """)
 
-    tab_list, tab_attendance, tab_soft, tab_lifecycle, tab_schedule, tab_io = st.tabs(
+    tab_list, tab_attendance, tab_soft, tab_lifecycle, tab_medical, tab_portfolio, tab_schedule, tab_io = st.tabs(
         ["📇 Список гравців", "📅 Відвідуваність", "🌟 Оцінка Soft Skills",
-         "🎂 Дні народження / Мед.довідки", "🏋️ Розклад тренувань", "💾 Експорт/Імпорт"]
+         "🎂 Дні народження / Контракт", "🏥 Медичний профіль", "🎬 Портфоліо",
+         "🏋️ Розклад тренувань", "💾 Експорт/Імпорт"]
     )
 
     with tab_list:
@@ -1384,6 +1721,10 @@ def render_crm(df):
                 age = c_age.number_input("Вік", min_value=5, max_value=60, value=10)
                 sport = c2.selectbox("Вид спорту", ["Футбол", "Волейбол", "Біг", "Теніс", "Баскетбол", "Бокс", "Плавання", "Велоспорт", "Дзюдо"])
 
+                c_pos, c_reaction = st.columns(2)
+                position_input = c_pos.selectbox("Позиція", get_position_options(sport), key="add_position")
+                reaction_input = c_reaction.slider("Реакція (важливо для воротарів)", 0, 100, 50, key="add_reaction")
+
                 c3, c4, c5, c6, c7, c8, c9 = st.columns(7)
                 matches = c3.number_input("Матчі", min_value=0)
                 score = c4.number_input("Очки", min_value=0)
@@ -1393,9 +1734,10 @@ def render_crm(df):
                 workload = c8.number_input("Матчів/тиж.", 0, 7, 0)
                 number = c9.number_input("Номер", 1, 99, 1)
 
-                c_bday, c_med = st.columns(2)
+                c_bday, c_med, c_contract = st.columns(3)
                 bday_input = c_bday.date_input("🎂 Дата народження", value=None, key="add_bday")
                 med_input = c_med.date_input("🩺 Мед.довідка дійсна до", value=None, key="add_med")
+                contract_input = c_contract.date_input("📄 Контракт дійсний до", value=None, key="add_contract")
 
                 if st.form_submit_button("Зберегти гравця", type="primary"):
                     if name.strip() == "":
@@ -1404,9 +1746,11 @@ def render_crm(df):
                         coach_group = st.session_state.user_info['coach_group']
                         birthday_str = bday_input.strftime("%m-%d") if bday_input else None
                         medical_str = med_input.strftime("%Y-%m-%d") if med_input else None
+                        contract_str = contract_input.strftime("%Y-%m-%d") if contract_input else None
                         db_add_athlete(name, age, sport, int(matches), int(score),
                                        speed, int(stamina), int(power), int(workload), int(number),
-                                       coach_group, birthday_str, medical_str)
+                                       coach_group, birthday_str, medical_str,
+                                       position_input, int(reaction_input), None, None, contract_str)
                         st.success(f"✅ Спортсмена **{name}** збережено у базі даних!")
                         st.rerun()
 
@@ -1525,8 +1869,8 @@ def render_crm(df):
                 st.rerun()
 
     with tab_lifecycle:
-        st.subheader("🎂 Дні народження та 🩺 медичні довідки")
-        st.caption("Ці дані живлять віджет «Що сьогодні» на дашборді — заповніть їх, щоб не пропустити важливі дати.")
+        st.subheader("🎂 Дні народження, 🩺 медичні довідки та 📄 контракти")
+        st.caption("Ці дані живлять віджет «Що сьогодні» на дашборді — заповніть їх, щоб не пропустити важливі дати. Контракти, що закінчуються протягом 30 днів, підсвічуються червоним.")
 
         if not df.empty:
             lc_player = st.selectbox("Спортсмен:", df["Ім'я"], key="lifecycle_select")
@@ -1549,30 +1893,159 @@ def render_crm(df):
                 except Exception:
                     current_med = None
 
-            c_lc1, c_lc2 = st.columns(2)
+            current_contract = None
+            contract_val = lc_row.get("Контракт до")
+            if contract_val and not pd.isna(contract_val):
+                try:
+                    current_contract = datetime.strptime(str(contract_val), "%Y-%m-%d").date()
+                except Exception:
+                    current_contract = None
+
+            c_lc1, c_lc2, c_lc3 = st.columns(3)
             new_bday = c_lc1.date_input("🎂 Дата народження (рік не враховується)", value=current_bday, key="lc_bday")
             new_med = c_lc2.date_input("🩺 Мед.довідка дійсна до", value=current_med, key="lc_med")
+            new_contract = c_lc3.date_input("📄 Контракт дійсний до", value=current_contract, key="lc_contract")
+
+            days_to_contract_preview = get_days_to_expiry(new_contract.strftime("%Y-%m-%d")) if new_contract else None
+            if days_to_contract_preview is not None:
+                if days_to_contract_preview < 0:
+                    st.error(f"❌ Контракт цього гравця вже прострочено на {abs(days_to_contract_preview)} дн.")
+                elif days_to_contract_preview <= 30:
+                    st.warning(f"⚠️ Контракт закінчується через {days_to_contract_preview} дн. — потрібне продовження.")
 
             if st.button("💾 Зберегти дати", type="primary", key="save_lifecycle"):
                 birthday_str = new_bday.strftime("%m-%d") if new_bday else None
                 medical_str = new_med.strftime("%Y-%m-%d") if new_med else None
-                db_update_athlete_lifecycle(lc_player, birthday_str, medical_str)
+                contract_str = new_contract.strftime("%Y-%m-%d") if new_contract else None
+                db_update_athlete_lifecycle(lc_player, birthday_str, medical_str, contract_str)
                 st.success(f"✅ Дати для {lc_player} оновлено!")
                 st.rerun()
 
             st.divider()
             st.subheader("📋 Загальний огляд по групі")
+            st.caption("🔴 Червоним позначені контракти, що закінчуються протягом 30 днів або вже прострочені.")
             overview_rows = []
             for _, row in df.iterrows():
                 d_bday = get_days_to_birthday(row.get("День народження"))
                 d_med = get_days_to_expiry(row.get("Мед.довідка до"))
+                d_contract = get_days_to_expiry(row.get("Контракт до"))
                 overview_rows.append({
                     "Ім'я": row["Ім'я"],
                     "🎂 Днів до ДН": d_bday if d_bday is not None else "—",
-                    "🩺 Днів до закінчення довідки": d_med if d_med is not None else "—"
+                    "🩺 Днів до закінчення довідки": d_med if d_med is not None else "—",
+                    "📄 Днів до закінчення контракту": d_contract if d_contract is not None else "—"
                 })
             overview_df = pd.DataFrame(overview_rows)
-            st.dataframe(overview_df, use_container_width=True, hide_index=True)
+
+            def highlight_contract(val):
+                if isinstance(val, (int, float)) and val <= 30:
+                    return 'background-color: #4a1a1a; color: #ff6666; font-weight: bold'
+                return ''
+
+            st.dataframe(
+                overview_df.style.applymap(highlight_contract, subset=["📄 Днів до закінчення контракту"]),
+                use_container_width=True, hide_index=True
+            )
+
+    with tab_medical:
+        st.subheader("🏥 Медичний профіль")
+        st.caption("⚠️ Конфіденційна медична інформація — доступна лише тренеру/лікарю команди та не відображається в кабінеті батьків.")
+
+        if not df.empty:
+            med_player = st.selectbox("Спортсмен:", df["Ім'я"], key="medical_select")
+            mp = df[df["Ім'я"] == med_player].iloc[0]
+
+            with st.form("medical_profile_form"):
+                mc1, mc2 = st.columns(2)
+                blood_options = ["Не вказано", "O(I)+", "O(I)-", "A(II)+", "A(II)-", "B(III)+", "B(III)-", "AB(IV)+", "AB(IV)-"]
+                current_blood = mp.get("Група крові") if mp.get("Група крові") in blood_options else "Не вказано"
+                new_blood = mc1.selectbox("Група крові", blood_options, index=blood_options.index(current_blood))
+                new_allergies = mc2.text_input("Алергії", value=mp.get("Алергії") or "", placeholder="напр. пеніцилін, пилок, горіхи...")
+
+                if st.form_submit_button("💾 Зберегти медичний профіль", type="primary"):
+                    db_update_medical_profile(med_player, new_blood, new_allergies)
+                    st.success(f"✅ Медичний профіль {med_player} оновлено!")
+                    st.rerun()
+
+            st.divider()
+            st.subheader("🩹 Історія травм")
+            with st.form("add_injury_form"):
+                ic1, ic2, ic3 = st.columns(3)
+                injury_type = ic1.text_input("Тип травми", placeholder="напр. розтягнення зв'язок")
+                injury_date = ic2.date_input("Дата травми", value=datetime.today())
+                recovery_days = ic3.number_input("Днів на відновлення", min_value=0, max_value=365, value=7)
+                injury_notes = st.text_area("Опис / коментар лікаря", placeholder="Деталі травми, лікування, рекомендації...")
+                if st.form_submit_button("➕ Додати запис про травму", type="primary"):
+                    if injury_type.strip():
+                        db_save_injury(med_player, injury_type, injury_date.strftime("%Y-%m-%d"), int(recovery_days), injury_notes)
+                        st.success("✅ Запис про травму додано!")
+                        st.rerun()
+                    else:
+                        st.error("⚠️ Вкажіть тип травми.")
+
+            injuries = db_load_injuries(med_player)
+            if injuries:
+                st.markdown(f"**Історія травм — {med_player} ({len(injuries)}):**")
+                for inj in injuries:
+                    with st.container():
+                        ci1, ci2 = st.columns([5, 1])
+                        with ci1:
+                            st.warning(f"🩹 **{inj['injury_type']}** — {inj['injury_date']} (відновлення: {inj['recovery_days']} дн.)")
+                            if inj['notes']:
+                                st.caption(inj['notes'])
+                        with ci2:
+                            if st.button("🗑️", key=f"del_injury_{inj['id']}"):
+                                db_delete_injury(inj['id'])
+                                st.rerun()
+            else:
+                st.info(f"Записів про травми для {med_player} немає.")
+
+    with tab_portfolio:
+        st.subheader("🎬 Портфоліо гравця")
+        st.caption("Додавайте посилання на фото та відео з виступів гравця — матчі, тренування, нагороди.")
+
+        if not df.empty:
+            pf_player = st.selectbox("Спортсмен:", df["Ім'я"], key="portfolio_select")
+
+            with st.form("add_portfolio_form"):
+                pc1, pc2 = st.columns([1, 3])
+                media_type = pc1.selectbox("Тип", ["📷 Фото", "🎥 Відео"])
+                media_url = pc2.text_input("Посилання (URL)", placeholder="https://...")
+                media_desc = st.text_input("Опис", placeholder="напр. фінальний матч чемпіонату області, вересень 2025")
+                if st.form_submit_button("➕ Додати до портфоліо", type="primary"):
+                    if media_url.strip():
+                        db_save_portfolio_item(pf_player, media_url.strip(), media_type, media_desc)
+                        st.success("✅ Додано до портфоліо!")
+                        st.rerun()
+                    else:
+                        st.error("⚠️ Вкажіть посилання.")
+
+            st.divider()
+            portfolio_items = db_load_portfolio(pf_player)
+            if portfolio_items:
+                st.markdown(f"**Портфоліо — {pf_player} ({len(portfolio_items)}):**")
+                cols = st.columns(2)
+                for i, item in enumerate(portfolio_items):
+                    with cols[i % 2]:
+                        with st.container(border=True):
+                            st.write(f"{item['media_type']} · {item['created_at'][:10]}")
+                            if item['description']:
+                                st.caption(item['description'])
+                            if "Фото" in item['media_type']:
+                                try:
+                                    st.image(item['url'], use_container_width=True)
+                                except Exception:
+                                    st.markdown(f"🔗 [{item['url']}]({item['url']})")
+                            elif "Відео" in item['media_type']:
+                                try:
+                                    st.video(item['url'])
+                                except Exception:
+                                    st.markdown(f"🔗 [{item['url']}]({item['url']})")
+                            if st.button("🗑️ Видалити", key=f"del_portfolio_{item['id']}", use_container_width=True):
+                                db_delete_portfolio_item(item['id'])
+                                st.rerun()
+            else:
+                st.info(f"Портфоліо для {pf_player} ще порожнє.")
 
     with tab_schedule:
         st.subheader("🏋️ Розклад тренувань групи")
