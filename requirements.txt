@@ -3,3 +3,4 @@ pandas
 numpy
 matplotlib
 opencv-python-headless
+streamlit-echarts
