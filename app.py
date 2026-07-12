@@ -59,24 +59,6 @@ def init_db():
     c = conn.cursor()
 
     c.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            username TEXT PRIMARY KEY,
-            password_hash TEXT,
-            role TEXT,
-            coach_group TEXT
-        )
-    """)
-
-    default_users = [
-        ("admin", hashlib.sha256("admin2026".encode()).hexdigest(), "admin", "Всі"),
-        ("trener1", hashlib.sha256("trener1_26".encode()).hexdigest(), "coach", "Тренер 1"),
-        ("trener2", hashlib.sha256("trener2_26".encode()).hexdigest(), "coach", "Тренер 2")
-    ]
-    c.execute("SELECT COUNT(*) FROM users")
-    if c.fetchone()[0] == 0:
-        c.executemany("INSERT INTO users VALUES (?, ?, ?, ?)", default_users)
-
-    c.execute("""
         CREATE TABLE IF NOT EXISTS athletes (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             name        TEXT NOT NULL,
@@ -764,51 +746,6 @@ def render_gauges(df: pd.DataFrame):
             st.progress(per_pct / 100)
 
 
-# ==========================================
-# МОДУЛЬ БЕЗПЕКИ ТА АВТОРИЗАЦІЇ
-# ==========================================
-
-def authenticate(username, password):
-    conn = get_connection()
-    user = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
-    conn.close()
-    if user:
-        pass_hash = hashlib.sha256(password.encode()).hexdigest()
-        if user['password_hash'] == pass_hash:
-            return dict(user)
-    return None
-
-def render_login_screen():
-    st.title("🔒 Вхід у систему OmniSport Pro")
-    st.caption("OmniSport Pro — Performance Analytics · Вхід до системи")
-
-    with st.container():
-        st.subheader("🔑 Авторизація")
-        with st.form("login_form"):
-            user = st.text_input("Логін користувача", placeholder="Введіть логін...")
-            pwd = st.text_input("Пароль", type="password", placeholder="Введіть пароль...")
-            submitted = st.form_submit_button("▶️ Увійти до системи", type="primary", use_container_width=True)
-            if submitted:
-                user_data = authenticate(user, pwd)
-                if user_data:
-                    st.session_state.logged_in = True
-                    st.session_state.user_info = user_data
-                    st.rerun()
-                else:
-                    st.error("❌ Невірний логін або пароль")
-
-    st.markdown("---")
-    st.caption("🔒 Система розмежування доступу за ролями.")
-    st.caption("Для отримання облікових даних зверніться до адміністратора.")
-
-    with st.expander("ℹ️ Тестові облікові записи (для демо)", expanded=False):
-        demo_accounts = pd.DataFrame({
-            "Логін": ["admin", "trener1"],
-            "Пароль": ["admin2026", "trener1_26"],
-            "Роль": ["🔑 Адміністратор", "🧑‍🏫 Тренер"]
-        })
-        st.table(demo_accounts.set_index("Логін"))
-
 def anonymize_data(df):
     """Шифрує імена дітей для дотримання GDPR"""
     df_anon = df.copy()
@@ -877,12 +814,8 @@ def main():
         render_parent_cabinet(st.query_params["token"])
         return
 
-    if 'logged_in' not in st.session_state:
-        st.session_state.logged_in = False
-
-    if not st.session_state.logged_in:
-        render_login_screen()
-        return
+    if 'user_info' not in st.session_state:
+        st.session_state.user_info = {"username": "admin", "role": "admin", "coach_group": "Всі"}
 
     df = load_athletes_with_per()
     user_info = st.session_state.user_info
@@ -894,11 +827,6 @@ def main():
     with st.sidebar:
         st.title("🏆 OmniSport Pro")
         st.caption("Performance Analytics v12.2 — SQLite Edition")
-
-        st.info(f"👤 Користувач: **{user_info['username']}** ({user_info['role'].upper()})")
-        if st.button("🚪 Вийти", use_container_width=True):
-            st.session_state.logged_in = False
-            st.rerun()
 
         st.divider()
 
