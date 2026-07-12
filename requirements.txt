@@ -5,3 +5,4 @@ matplotlib
 opencv-python-headless
 streamlit-echarts
 openpyxl
+xlrd
