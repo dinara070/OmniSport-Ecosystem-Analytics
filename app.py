@@ -470,6 +470,98 @@ def db_delete_training(training_id: int):
     conn.close()
 
 
+# ---------- ІМПОРТ ДАНИХ (ДОДАВАННЯ, БЕЗ ВИДАЛЕННЯ ІСНУЮЧОГО) ----------
+
+def db_import_athletes_append(df: pd.DataFrame, coach_group: str = "Тренер 1") -> int:
+    """Додає гравців з DataFrame до бази, не видаляючи існуючих записів."""
+    added = 0
+    for _, row in df.iterrows():
+        name = str(row.get("Ім'я", "")).strip()
+        if not name or name.lower() == "nan":
+            continue
+        db_add_athlete(
+            name,
+            int(row.get("Вік", 20) or 20),
+            row.get("Вид спорту", ""),
+            int(row.get("Матчі", 0) or 0),
+            int(row.get("Очки", 0) or 0),
+            float(row.get("Швидкість", 20.0) or 20.0),
+            int(row.get("Витривалість", 50) or 50),
+            int(row.get("Сила", 50) or 50),
+            int(row.get("Навантаження_7днів", 0) or 0),
+            int(row.get("Номер", 1) or 1),
+            coach_group
+        )
+        added += 1
+    return added
+
+
+def db_import_tactic_notes(df: pd.DataFrame) -> int:
+    added = 0
+    for _, row in df.iterrows():
+        player = str(row.get("player", row.get("Гравець", ""))).strip()
+        tactic = row.get("tactic", row.get("Тактика", ""))
+        notes = row.get("notes", row.get("Нотатки", ""))
+        if not player or player.lower() == "nan":
+            continue
+        db_save_tactic_note(player, tactic, notes)
+        added += 1
+    return added
+
+
+def db_import_video_notes(df: pd.DataFrame) -> int:
+    added = 0
+    for _, row in df.iterrows():
+        url = row.get("url", row.get("URL", ""))
+        notes = row.get("notes", row.get("Нотатки", ""))
+        db_save_video_note(url, notes)
+        added += 1
+    return added
+
+
+def db_import_match_logs(df: pd.DataFrame) -> int:
+    added = 0
+    for _, row in df.iterrows():
+        p1 = str(row.get("player1", row.get("Гравець 1 🔴", ""))).strip()
+        p2 = str(row.get("player2", row.get("Гравець 2 🔵", ""))).strip()
+        if not p1 or not p2 or p1.lower() == "nan" or p2.lower() == "nan":
+            continue
+        s1 = int(row.get("score1", 0) or 0)
+        s2 = int(row.get("score2", 0) or 0)
+        winner = str(row.get("winner", row.get("Переможець 🏆", p1 if s1 >= s2 else p2)))
+        db_save_match_log(p1, p2, s1, s2, winner, [])
+        added += 1
+    return added
+
+
+def db_import_athlete_notes(df: pd.DataFrame) -> int:
+    added = 0
+    for _, row in df.iterrows():
+        athlete = str(row.get("athlete", row.get("Гравець", ""))).strip()
+        note = str(row.get("note", row.get("Нотатка", ""))).strip()
+        if not athlete or not note or athlete.lower() == "nan" or note.lower() == "nan":
+            continue
+        db_save_athlete_note(athlete, note)
+        added += 1
+    return added
+
+
+def db_import_workloads(df: pd.DataFrame) -> int:
+    updated = 0
+    for _, row in df.iterrows():
+        name = str(row.get("Ім'я", row.get("Гравець", ""))).strip()
+        workload_col = "Навантаження_7днів" if "Навантаження_7днів" in df.columns else "Навантаження (%)"
+        if workload_col not in row or not name or name.lower() == "nan":
+            continue
+        try:
+            workload = int(row.get(workload_col, 0) or 0)
+        except (ValueError, TypeError):
+            continue
+        db_update_athlete_workload(name, workload)
+        updated += 1
+    return updated
+
+
 # ==========================================
 # ІНІЦІАЛІЗАЦІЯ СЕСІЇ
 # ==========================================
@@ -546,6 +638,52 @@ def get_sport_emoji(sport: str) -> str:
         "Баскетбол": "🏀", "Бокс": "🥊", "Плавання": "🏊", "Велоспорт": "🚴"
     }
     return mapping.get(sport, "🏅")
+
+
+def db_append_athletes(df: pd.DataFrame):
+    """Додає гравців з df до існуючої бази, НЕ видаляючи наявних (на відміну від db_bulk_insert_athletes)."""
+    for _, row in df.iterrows():
+        db_add_athlete(
+            row.get("Ім'я", ""), int(row.get("Вік", 20)), row.get("Вид спорту", ""),
+            int(row.get("Матчі", 0)), int(row.get("Очки", 0)), float(row.get("Швидкість", 20.0)),
+            int(row.get("Витривалість", 50)), int(row.get("Сила", 50)),
+            int(row.get("Навантаження_7днів", 0)), int(row.get("Номер", 1))
+        )
+
+
+# ---------- УНІФІКОВАНИЙ БЛОК ЕКСПОРТУ / ІМПОРТУ ДЛЯ РОЗДІЛІВ ----------
+
+def render_export_import_block(section_key, export_df=None, export_filename="export", export_label="Дані розділу",
+                                import_enabled=True, import_label="CSV файл", import_hint=None,
+                                import_types=("csv",), extra_export=None, extra_note=None, expanded=False):
+    """Уніфікований блок «Експорт / Імпорт» для розділу.
+    Повертає завантажений файл (UploadedFile) або None — сама функція розділу вирішує, що з ним робити.
+    """
+    with st.expander(f"📤📥 Експорт та Імпорт — {export_label}", expanded=expanded):
+        col_exp, col_imp = st.columns(2)
+        uploaded = None
+        with col_exp:
+            st.markdown("**📤 Експорт**")
+            if export_df is not None and not export_df.empty:
+                st.download_button("📥 Завантажити CSV", export_df.to_csv(index=False).encode('utf-8'),
+                                    f"{export_filename}.csv", mime="text/csv",
+                                    use_container_width=True, key=f"{section_key}_exp_csv")
+                st.download_button("📥 Завантажити JSON", export_df.to_json(orient='records', force_ascii=False),
+                                    f"{export_filename}.json", mime="application/json",
+                                    use_container_width=True, key=f"{section_key}_exp_json")
+            else:
+                st.caption("Немає даних для експорту.")
+            if extra_export:
+                extra_export()
+        with col_imp:
+            st.markdown("**📥 Імпорт**")
+            if import_enabled:
+                if import_hint:
+                    st.caption(import_hint)
+                uploaded = st.file_uploader(import_label, type=list(import_types), key=f"{section_key}_imp")
+            else:
+                st.caption(extra_note or "Імпорт для цього розділу недоступний.")
+        return uploaded
 
 
 # ---------- ДОПОМІЖНІ ФУНКЦІЇ ДЛЯ ВІДЖЕТА "ЩО СЬОГОДНІ" ----------
@@ -744,6 +882,69 @@ def render_gauges(df: pd.DataFrame):
         with col_g2:
             st.metric("👑 Командний PER", f"{per_pct}")
             st.progress(per_pct / 100)
+
+
+def render_export_import_block(section_key: str, export_data: dict, import_config: dict = None, note: str = None):
+    """
+    Універсальний блок «Експорт / Імпорт» для розділу.
+
+    export_data: {підпис: DataFrame} — дані, доступні для завантаження у CSV/JSON.
+    import_config: {"columns_hint": str, "label": str, "handler": callable(pd.DataFrame) -> int}
+                    або None, якщо імпорт для розділу недоступний.
+    """
+    with st.expander("💾 Експорт та 📤 Імпорт даних розділу", expanded=False):
+        if note:
+            st.caption(note)
+
+        col_exp, col_imp = st.columns(2)
+
+        with col_exp:
+            st.markdown("**📥 Експорт**")
+            has_any = False
+            for label, d in (export_data or {}).items():
+                if d is not None and hasattr(d, "empty") and not d.empty:
+                    has_any = True
+                    safe_label = "".join(ch if ch.isalnum() else "_" for ch in label.lower())
+                    st.caption(f"{label} ({len(d)} рядків)")
+                    ce1, ce2 = st.columns(2)
+                    ce1.download_button(
+                        "📄 CSV",
+                        d.to_csv(index=False).encode('utf-8'),
+                        f"{section_key}_{safe_label}.csv",
+                        mime="text/csv",
+                        use_container_width=True,
+                        key=f"exp_csv_{section_key}_{safe_label}"
+                    )
+                    ce2.download_button(
+                        "🧾 JSON",
+                        d.to_json(orient='records', force_ascii=False),
+                        f"{section_key}_{safe_label}.json",
+                        mime="application/json",
+                        use_container_width=True,
+                        key=f"exp_json_{section_key}_{safe_label}"
+                    )
+            if not has_any:
+                st.info("Немає даних для експорту в цьому розділі.")
+
+        with col_imp:
+            st.markdown("**📤 Імпорт**")
+            if import_config:
+                if import_config.get("columns_hint"):
+                    st.caption(f"Очікувані колонки: {import_config['columns_hint']}")
+                uploaded = st.file_uploader("CSV файл", type=["csv"], key=f"imp_upl_{section_key}")
+                if uploaded is not None:
+                    try:
+                        imp_df = pd.read_csv(uploaded)
+                        st.dataframe(imp_df.head(5), use_container_width=True, hide_index=True)
+                        if st.button(f"✅ Імпортувати ({import_config.get('label', 'дані')})",
+                                     key=f"imp_btn_{section_key}", type="primary", use_container_width=True):
+                            count = import_config["handler"](imp_df)
+                            st.success(f"✅ Імпортовано записів: {count}")
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"Помилка читання файлу: {e}")
+            else:
+                st.info("Імпорт для цього розділу недоступний — дані є розрахунковими або тимчасовими.")
 
 
 def anonymize_data(df):
@@ -1028,6 +1229,18 @@ def render_dashboard(df):
     st.pyplot(fig)
     plt.close(fig)
 
+    st.divider()
+    render_export_import_block(
+        section_key="dashboard",
+        export_data={"Гравці (повний список)": df},
+        import_config={
+            "columns_hint": "Ім'я, Вік, Вид спорту, Матчі, Очки, Швидкість, Витривалість, Сила, Навантаження_7днів, Номер",
+            "label": "нові гравці",
+            "handler": lambda d: db_import_athletes_append(d, st.session_state.user_info.get('coach_group', 'Тренер 1'))
+        },
+        note="Експортуйте поточний склад команди або імпортуйте нових гравців із CSV (додаються до існуючих)."
+    )
+
 
 # ==========================================
 # 1.5 КОМАНДНА АНАЛІТИКА
@@ -1107,6 +1320,17 @@ def render_team_analytics(df):
     sport_avg = df.groupby('Вид спорту')[['Швидкість', 'Витривалість', 'Сила', 'PER (Рейтинг)']].mean().round(1)
     st.dataframe(sport_avg.style.background_gradient(cmap='YlGn'), use_container_width=True)
 
+    st.divider()
+    render_export_import_block(
+        section_key="team_analytics",
+        export_data={
+            "Середні показники за видами спорту": sport_avg.reset_index(),
+            "Повна команда": df
+        },
+        import_config=None,
+        note="Ці дані є розрахунковими (агрегати по команді), тому доступний лише експорт."
+    )
+
 
 # ==========================================
 # 2. БАЗА ГРАВЦІВ (CRM + ДЮСШ)
@@ -1119,9 +1343,9 @@ def render_crm(df):
     Усі зміни зберігаються в базі даних.
     """)
 
-    tab_list, tab_attendance, tab_soft, tab_lifecycle, tab_schedule = st.tabs(
+    tab_list, tab_attendance, tab_soft, tab_lifecycle, tab_schedule, tab_io = st.tabs(
         ["📇 Список гравців", "📅 Відвідуваність", "🌟 Оцінка Soft Skills",
-         "🎂 Дні народження / Мед.довідки", "🏋️ Розклад тренувань"]
+         "🎂 Дні народження / Мед.довідки", "🏋️ Розклад тренувань", "💾 Експорт/Імпорт"]
     )
 
     with tab_list:
@@ -1391,6 +1615,30 @@ def render_crm(df):
                 st.success("✅ Тренування додано до розкладу!")
                 st.rerun()
 
+    with tab_io:
+        st.subheader("💾 Експорт та 📤 Імпорт бази гравців")
+        st.caption("Завантажте базу гравців вашої групи або додайте нових гравців масово через CSV-файл.")
+
+        notes_all = pd.read_sql_query(
+            "SELECT * FROM athlete_notes ORDER BY created_at DESC", get_connection()
+        )
+        attendance_all = db_load_attendance(st.session_state.user_info['coach_group'])
+
+        render_export_import_block(
+            section_key="crm_athletes",
+            export_data={
+                "Гравці": df,
+                "Нотатки гравців": notes_all,
+                "Відвідуваність": attendance_all
+            },
+            import_config={
+                "columns_hint": "Ім'я, Вік, Вид спорту, Матчі, Очки, Швидкість, Витривалість, Сила, Навантаження_7днів, Номер",
+                "label": "гравці",
+                "handler": lambda d: db_import_athletes_append(d, st.session_state.user_info.get('coach_group', 'Тренер 1'))
+            },
+            note="Імпорт додає нових гравців до бази (не видаляє існуючих)."
+        )
+
 
 # ==========================================
 # 3. H2H СКАУТИНГ
@@ -1484,6 +1732,14 @@ def render_scouting(df):
             st.info(f"📌 **{leader}** трохи випереджає {follower} (різниця PER: {diff:.1f}). Рекомендовано для стартового складу.")
         else:
             st.warning(f"🏆 **{leader}** значно перевершує {follower} (різниця PER: {diff:.1f}). Розгляньте додаткове тренування для {follower}.")
+
+    st.divider()
+    render_export_import_block(
+        section_key="scouting",
+        export_data={"Порівняння гравців": compare_df.reset_index()},
+        import_config=None,
+        note="Дані порівняння розраховуються автоматично, тому доступний лише експорт."
+    )
 
 
 # ==========================================
@@ -1632,6 +1888,23 @@ def render_tactics(df):
         st.pyplot(fig)
         plt.close(fig)
 
+    st.divider()
+    tactic_notes_df = pd.DataFrame(db_load_tactic_notes(selected_player))
+    points_df = pd.DataFrame(st.session_state.tactic_points, columns=["X", "Y"]) if st.session_state.tactic_points else pd.DataFrame()
+    render_export_import_block(
+        section_key="tactics",
+        export_data={
+            f"Тактичні нотатки ({selected_player})": tactic_notes_df,
+            "Ручні точки на полі": points_df
+        },
+        import_config={
+            "columns_hint": "player, tactic, notes",
+            "label": "тактичні нотатки",
+            "handler": db_import_tactic_notes
+        },
+        note="Імпорт додає тактичні нотатки до бази даних."
+    )
+
 
 # ==========================================
 # 5. ІНТЕГРАЦІЯ З МЕДІА
@@ -1713,6 +1986,19 @@ def render_media_integration():
                         st.rerun()
         else:
             st.info("Архів схем наразі порожній. Зробіть фото вище, щоб додати першу схему.")
+
+    st.divider()
+    video_notes_df = pd.DataFrame(db_load_video_notes())
+    render_export_import_block(
+        section_key="media",
+        export_data={"Відеонотатки": video_notes_df},
+        import_config={
+            "columns_hint": "url, notes",
+            "label": "відеонотатки",
+            "handler": db_import_video_notes
+        },
+        note="Імпорт додає нові відеонотатки до бази даних."
+    )
 
 
 # ==========================================
@@ -2237,6 +2523,17 @@ def render_cv_analysis():
         else:
             st.caption(f"Показано **{shown}** з **{len(events)}** подій.")
 
+    st.divider()
+    render_export_import_block(
+        section_key="cv_analysis",
+        export_data={
+            "Ігрові події": pd.DataFrame(st.session_state.cv_events),
+            "Позиції м'яча": pd.DataFrame(st.session_state.cv_ball_positions, columns=["X", "Y"]) if st.session_state.cv_ball_positions else pd.DataFrame()
+        },
+        import_config=None,
+        note="Дані CV-аналізу симулюються автоматично, тому доступний лише експорт."
+    )
+
 
 # ==========================================
 # 5.7 OCR ТАКТИЧНИХ ФОТО
@@ -2561,6 +2858,18 @@ def render_tactical_ocr(df):
                 st.download_button("📥 Експортувати CSV", export_df.to_csv(index=False).encode('utf-8'),
                                    "tactical_ocr_result.csv", mime="text/csv", use_container_width=True)
 
+    st.divider()
+    ocr_export_data = {}
+    if st.session_state.ocr_result is not None:
+        ocr_export_data["Синхронізовані гравці (OCR)"] = pd.DataFrame(st.session_state.ocr_result["synchronized_players"])
+        ocr_export_data["Стрілки (OCR)"] = pd.DataFrame(st.session_state.ocr_result["arrows"])
+    render_export_import_block(
+        section_key="ocr",
+        export_data=ocr_export_data,
+        import_config=None,
+        note="Результати OCR є розрахунковими для конкретного фото, тому доступний лише експорт."
+    )
+
 
 # ==========================================
 # 6. ЛАБОРАТОРІЯ ФІЗИКИ
@@ -2650,6 +2959,14 @@ def render_physics(df):
         fig2.patch.set_facecolor('#0d0d1a')
         st.pyplot(fig2)
         plt.close(fig2)
+
+    st.divider()
+    render_export_import_block(
+        section_key="physics",
+        export_data={f"Фізичні показники ({player})": pd.DataFrame([data])},
+        import_config=None,
+        note="Показники фізичної лабораторії розраховуються автоматично, тому доступний лише експорт."
+    )
 
 
 # ==========================================
@@ -2770,6 +3087,21 @@ def render_simulator(df):
     elif st.session_state.match_log:
         st.info("Попередній матч збережено. Натисніть кнопку вище для нового.")
 
+    st.divider()
+    sim_history_df = pd.DataFrame(db_load_match_history())
+    if not sim_history_df.empty:
+        sim_history_df = sim_history_df.drop(columns=["log_json"], errors="ignore")
+    render_export_import_block(
+        section_key="simulator",
+        export_data={"Історія симуляцій": sim_history_df},
+        import_config={
+            "columns_hint": "player1, player2, score1, score2, winner",
+            "label": "матчі",
+            "handler": db_import_match_logs
+        },
+        note="Імпорт додає матчі до архіву (без детальної хронології подій)."
+    )
+
 
 # ==========================================
 # ІСТОРІЯ МАТЧІВ
@@ -2842,6 +3174,18 @@ def render_match_history():
             col_s.markdown(f"**[{event['рахунок']}]**")
     except Exception:
         st.warning("Деталі матчу недоступні.")
+
+    st.divider()
+    render_export_import_block(
+        section_key="match_history",
+        export_data={"Архів матчів": history_df},
+        import_config={
+            "columns_hint": "player1, player2, score1, score2, winner",
+            "label": "матчі",
+            "handler": db_import_match_logs
+        },
+        note="Імпорт додає матчі до архіву (без детальної хронології подій)."
+    )
 
     st.divider()
     st.subheader("🗑️ Управління даними")
@@ -2957,6 +3301,18 @@ def render_injury_prediction(df):
     st.dataframe(risk_df.style.background_gradient(cmap='RdYlGn_r', subset=['Ризик (%)']),
                  use_container_width=True, hide_index=True)
 
+    st.divider()
+    render_export_import_block(
+        section_key="injury",
+        export_data={"Ризики травматизму (команда)": risk_df},
+        import_config={
+            "columns_hint": "Ім'я, Навантаження_7днів",
+            "label": "тижневе навантаження",
+            "handler": db_import_workloads
+        },
+        note="Імпорт CSV масово оновлює тижневе навантаження гравців (для перерахунку ризику)."
+    )
+
 
 # ==========================================
 # 9. AI-ТРЕНЕР
@@ -3050,6 +3406,14 @@ def render_ai_advisor(df):
     t2.metric("Цільова швидкість", f"{target_speed:.1f}", f"+{target_speed-speed:.1f}")
     t3.metric("Цільова сила", f"{target_power:.0f}", f"+{target_power-power:.0f}")
 
+    st.divider()
+    render_export_import_block(
+        section_key="ai_advisor",
+        export_data={f"Розклад тренувань ({selected_player})": schedule.reset_index()},
+        import_config=None,
+        note="Розклад генерується автоматично на основі профілю гравця, тому доступний лише експорт."
+    )
+
 
 # ==========================================
 # 10. ІСТОРІЯ ФОРМИ
@@ -3112,6 +3476,17 @@ def render_form_history(df):
     summary.index = ['Мінімум', 'Максимум', 'Середнє']
     st.dataframe(summary, use_container_width=True)
 
+    st.divider()
+    render_export_import_block(
+        section_key="form_history",
+        export_data={
+            f"Динаміка форми ({selected_player})": history_df.reset_index(),
+            "Зведена статистика": summary.reset_index()
+        },
+        import_config=None,
+        note="Дані генеруються автоматично на основі поточних показників, тому доступний лише експорт."
+    )
+
 
 # ==========================================
 # 11. РЕСУРСИ
@@ -3154,6 +3529,15 @@ def render_resources():
     for term, definition in glossary.items():
         with st.expander(f"📌 {term}"):
             st.write(definition)
+
+    st.divider()
+    glossary_df = pd.DataFrame(list(glossary.items()), columns=["Термін", "Опис"])
+    render_export_import_block(
+        section_key="resources",
+        export_data={"Глосарій термінів": glossary_df},
+        import_config=None,
+        note="Довідкові матеріали статичні, тому доступний лише експорт глосарію."
+    )
 
 
 # ==========================================
@@ -3236,6 +3620,61 @@ def render_io(df):
         st.dataframe(notes_df.head(10), use_container_width=True, hide_index=True)
     elif preview_choice == "Тактичні нотатки":
         st.dataframe(tactic_df.head(10), use_container_width=True, hide_index=True)
+
+    st.divider()
+    st.subheader("📤 Універсальний імпорт (усі таблиці бази)")
+    st.caption("Швидкий доступ до імпорту в кожну таблицю бази даних без переходу до відповідного розділу.")
+
+    render_export_import_block(
+        section_key="io_athletes",
+        export_data={"Гравці": df},
+        import_config={
+            "columns_hint": "Ім'я, Вік, Вид спорту, Матчі, Очки, Швидкість, Витривалість, Сила, Навантаження_7днів, Номер",
+            "label": "гравці",
+            "handler": lambda d: db_import_athletes_append(d, st.session_state.user_info.get('coach_group', 'Тренер 1'))
+        },
+        note="👥 Гравці"
+    )
+    render_export_import_block(
+        section_key="io_matches",
+        export_data={"Архів матчів": match_df},
+        import_config={
+            "columns_hint": "player1, player2, score1, score2, winner",
+            "label": "матчі",
+            "handler": db_import_match_logs
+        },
+        note="🗃️ Матчі"
+    )
+    render_export_import_block(
+        section_key="io_video_notes",
+        export_data={"Відеонотатки": notes_df},
+        import_config={
+            "columns_hint": "url, notes",
+            "label": "відеонотатки",
+            "handler": db_import_video_notes
+        },
+        note="📹 Відеонотатки"
+    )
+    render_export_import_block(
+        section_key="io_tactic_notes",
+        export_data={"Тактичні нотатки": tactic_df},
+        import_config={
+            "columns_hint": "player, tactic, notes",
+            "label": "тактичні нотатки",
+            "handler": db_import_tactic_notes
+        },
+        note="🗺️ Тактичні нотатки"
+    )
+    render_export_import_block(
+        section_key="io_athlete_notes",
+        export_data={"Нотатки гравців": athlete_notes_df},
+        import_config={
+            "columns_hint": "athlete, note",
+            "label": "нотатки гравців",
+            "handler": db_import_athlete_notes
+        },
+        note="🗒️ Нотатки гравців"
+    )
 
 
 if __name__ == "__main__":
