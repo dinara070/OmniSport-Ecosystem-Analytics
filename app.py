@@ -68,7 +68,9 @@ def init_db():
     """)
 
     default_users = [
-        ("admin", hashlib.sha256("admin2026".encode()).hexdigest(), "admin", "Всі")
+        ("admin", hashlib.sha256("admin2026".encode()).hexdigest(), "admin", "Всі"),
+        ("trener1", hashlib.sha256("trener1_26".encode()).hexdigest(), "coach", "Тренер 1"),
+        ("trener2", hashlib.sha256("trener2_26".encode()).hexdigest(), "coach", "Тренер 2")
     ]
     c.execute("SELECT COUNT(*) FROM users")
     if c.fetchone()[0] == 0:
@@ -170,7 +172,7 @@ def init_db():
     """)
 
     migrations = [
-        "ALTER TABLE athletes ADD COLUMN coach TEXT DEFAULT 'Всі'",
+        "ALTER TABLE athletes ADD COLUMN coach TEXT DEFAULT 'Тренер 1'",
         "ALTER TABLE athletes ADD COLUMN parent_token TEXT",
         "ALTER TABLE athletes ADD COLUMN discipline INTEGER DEFAULT 50",
         "ALTER TABLE athletes ADD COLUMN teamwork INTEGER DEFAULT 50",
@@ -801,9 +803,9 @@ def render_login_screen():
 
     with st.expander("ℹ️ Тестові облікові записи (для демо)", expanded=False):
         demo_accounts = pd.DataFrame({
-            "Логін": ["admin"],
-            "Пароль": ["admin2026"],
-            "Роль": ["🔑 Адміністратор"]
+            "Логін": ["admin", "trener1"],
+            "Пароль": ["admin2026", "trener1_26"],
+            "Роль": ["🔑 Адміністратор", "🧑‍🏫 Тренер"]
         })
         st.table(demo_accounts.set_index("Логін"))
 
@@ -884,6 +886,10 @@ def main():
 
     df = load_athletes_with_per()
     user_info = st.session_state.user_info
+
+    if user_info['role'] == 'coach':
+        if 'coach' in df.columns:
+            df = df[df['coach'] == user_info['coach_group']]
 
     with st.sidebar:
         st.title("🏆 OmniSport Pro")
@@ -1002,44 +1008,6 @@ def main():
 
 
 # ==========================================
-# УНІВЕРСАЛЬНИЙ ВІДЖЕТ ЕКСПОРТУ/ІМПОРТУ
-# ==========================================
-def render_universal_io(df_export: pd.DataFrame, table_name="data"):
-    """Універсальний блок для імпорту та експорту в усіх розділах."""
-    st.divider()
-    with st.expander(f"💾 Експорт / Імпорт даних ({table_name})", expanded=False):
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown("**📥 Експортувати дані**")
-            if not df_export.empty:
-                csv = df_export.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    label=f"Завантажити {table_name}.csv",
-                    data=csv,
-                    file_name=f"{table_name}_{datetime.now().strftime('%Y%m%d')}.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
-            else:
-                st.info("Даних для експорту немає.")
-                
-        with c2:
-            st.markdown("**📤 Імпортувати дані**")
-            up = st.file_uploader(f"Завантажити CSV ({table_name})", type=["csv"], key=f"imp_{table_name}")
-            if up:
-                try:
-                    df_new = pd.read_csv(up)
-                    # Базовий імпорт для основної таблиці гравців
-                    if table_name == "athletes":
-                        db_bulk_insert_athletes(df_new)
-                        st.success("✅ Дані гравців успішно додано!")
-                        st.rerun()
-                    else:
-                        st.warning("⚠️ Для цього розділу автоматичний імпорт у БД наразі працює в режимі 'read-only' або вимагає додаткового налаштування колонок.")
-                except Exception as e:
-                    st.error(f"Помилка читання файлу: {e}")
-
-# ==========================================
 # 1. ДАШБОРД
 # ==========================================
 def render_dashboard(df):
@@ -1132,7 +1100,6 @@ def render_dashboard(df):
     st.pyplot(fig)
     plt.close(fig)
 
-render_universal_io(df, "athletes")
 
 # ==========================================
 # 1.5 КОМАНДНА АНАЛІТИКА
