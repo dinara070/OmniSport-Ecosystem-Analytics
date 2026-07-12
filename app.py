@@ -1187,6 +1187,18 @@ def render_export_import_block(section_key: str, export_data: dict, import_confi
                 st.info("Імпорт для цього розділу недоступний — дані є розрахунковими або тимчасовими.")
 
 
+def style_map_compat(styler, func, subset=None):
+    """
+    Сумісна обгортка для поелементного стилізування таблиці.
+    У pandas >= 2.1 метод Styler.applymap застарів і видалений у новіших версіях
+    (замінений на Styler.map) — саме це викликало AttributeError у розділі «База гравців».
+    Ця функція автоматично використовує доступний метод.
+    """
+    if hasattr(styler, "map"):
+        return styler.map(func, subset=subset)
+    return styler.applymap(func, subset=subset)
+
+
 def anonymize_data(df):
     """Шифрує імена дітей для дотримання GDPR"""
     df_anon = df.copy()
@@ -1943,7 +1955,7 @@ def render_crm(df):
                 return ''
 
             st.dataframe(
-                overview_df.style.applymap(highlight_contract, subset=["📄 Днів до закінчення контракту"]),
+                style_map_compat(overview_df.style, highlight_contract, subset=["📄 Днів до закінчення контракту"]),
                 use_container_width=True, hide_index=True
             )
 
@@ -3269,7 +3281,7 @@ def render_tactical_ocr(df):
                 elif "❌" in str(val): return 'background-color: #4a1a1a; color: #ff6666'
                 return ''
 
-            st.dataframe(sync_df.style.applymap(color_feasibility, subset=["Виконуваність"])
+            st.dataframe(style_map_compat(sync_df.style, color_feasibility, subset=["Виконуваність"])
                         .format({"Позиція X (м)": "{:.1f}", "Позиція Y (м)": "{:.1f}",
                                  "Швидкість": "{:.1f}", "Витривалість": "{:.0f}"}),
                         use_container_width=True, hide_index=True)
