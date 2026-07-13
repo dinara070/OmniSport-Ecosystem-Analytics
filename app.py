@@ -23,6 +23,18 @@ try:
 except ImportError:
     ECHARTS_AVAILABLE = False
 
+try:
+    import cv2
+    CV2_AVAILABLE = True
+except ImportError:
+    CV2_AVAILABLE = False
+
+try:
+    from ultralytics import YOLO
+    YOLO_AVAILABLE = True
+except ImportError:
+    YOLO_AVAILABLE = False
+
 # ==========================================
 # 0. КОНФІГУРАЦІЯ
 # ==========================================
@@ -30,6 +42,42 @@ except ImportError:
 st.set_page_config(page_title="OmniSport Pro", layout="wide", initial_sidebar_state="expanded")
 
 DB_PATH = "omnisport.db"
+
+# Ключові слова для автоматичного визначення тегів у текстових нотатках до відео
+# (розділ «Інтеграція з медіа» → таймкод-нотатки).
+AUTO_TAG_KEYWORDS = {
+    "⚽ Гол": ["гол", "забив", "заб'є", "влучив у ворота", "реалізував", "поразив ворота"],
+    "🧤 Сейв": ["сейв", "врятував", "відбив", "парирував", "вибив на кутовий"],
+    "❌ Помилка": ["помилка", "схибив", "втратив м'яч", "провал", "не встиг", "проґавив"],
+    "🟨 Жовта картка": ["жовта картка", "попередження", "фол"],
+    "🟥 Червона картка": ["червона картка", "видалення", "видалили"],
+    "🎯 Пенальті": ["пенальті", "11-метровий"],
+    "🚩 Офсайд": ["офсайд", "поза грою"],
+    "⛳ Кутовий": ["кутовий", "ріжний"],
+    "🎯 Асист": ["асист", "гольова передача", "пас у розріз", "гольова"],
+    "🔄 Заміна": ["заміна", "замінили", "вийшов на заміну"],
+}
+
+
+def auto_detect_tags(text: str) -> list:
+    """Повертає список тегів, знайдених у тексті нотатки за ключовими словами."""
+    if not text:
+        return []
+    text_lower = text.lower()
+    detected = []
+    for tag, keywords in AUTO_TAG_KEYWORDS.items():
+        if any(kw in text_lower for kw in keywords):
+            detected.append(tag)
+    return detected
+
+
+def format_timecode(seconds: int) -> str:
+    seconds = int(seconds or 0)
+    m, s = divmod(seconds, 60)
+    h, m = divmod(m, 60)
+    if h:
+        return f"{h:02d}:{m:02d}:{s:02d}"
+    return f"{m:02d}:{s:02d}"
 
 DEFAULT_DATA = pd.DataFrame({
     "Ім'я": ["Олександр", "Марія", "Іван", "Анна"],
@@ -152,6 +200,17 @@ def init_db():
             url        TEXT,
             notes      TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS video_timecode_notes (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            video_url         TEXT,
+            timecode_seconds  INTEGER DEFAULT 0,
+            note              TEXT,
+            tags              TEXT,
+            created_at        TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
@@ -632,6 +691,40 @@ def db_get_latest_video_note() -> dict | None:
     return dict(row) if row else None
 
 
+# ---------- ТАЙМКОД-НОТАТКИ ДО ВІДЕО ----------
+
+def db_save_timecoded_note(video_url: str, timecode_seconds: int, note: str, tags: str):
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO video_timecode_notes (video_url, timecode_seconds, note, tags) VALUES (?, ?, ?, ?)",
+        (video_url, int(timecode_seconds or 0), note, tags)
+    )
+    conn.commit()
+    conn.close()
+
+
+def db_load_timecoded_notes(video_url: str = None) -> list:
+    conn = get_connection()
+    if video_url:
+        rows = conn.execute(
+            "SELECT * FROM video_timecode_notes WHERE video_url = ? ORDER BY timecode_seconds ASC",
+            (video_url,)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM video_timecode_notes ORDER BY created_at DESC LIMIT 100"
+        ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def db_delete_timecoded_note(note_id: int):
+    conn = get_connection()
+    conn.execute("DELETE FROM video_timecode_notes WHERE id = ?", (note_id,))
+    conn.commit()
+    conn.close()
+
+
 # ---------- MATCH LOGS ----------
 
 def db_save_match_log(player1, player2, score1, score2, winner, log):
@@ -777,6 +870,23 @@ def db_import_video_notes(df: pd.DataFrame) -> int:
     return added
 
 
+def db_import_timecoded_notes(df: pd.DataFrame) -> int:
+    added = 0
+    for _, row in df.iterrows():
+        video_url = str(row.get("video_url", row.get("URL", ""))).strip()
+        note = str(row.get("note", row.get("Нотатка", ""))).strip()
+        if not note or note.lower() == "nan":
+            continue
+        try:
+            timecode = int(row.get("timecode_seconds", row.get("Таймкод (с)", 0)) or 0)
+        except (ValueError, TypeError):
+            timecode = 0
+        tags = str(row.get("tags", row.get("Теги", "")) or "")
+        db_save_timecoded_note(video_url, timecode, note, tags)
+        added += 1
+    return added
+
+
 def db_import_match_logs(df: pd.DataFrame) -> int:
     added = 0
     for _, row in df.iterrows():
@@ -850,6 +960,9 @@ if 'ocr_result' not in st.session_state:
     st.session_state.ocr_result = None
 if 'ocr_photo' not in st.session_state:
     st.session_state.ocr_photo = None
+
+if 'video_jump_time' not in st.session_state:
+    st.session_state.video_jump_time = 0
 
 
 def calculate_per(row):
@@ -2637,8 +2750,10 @@ def render_media_integration():
     st.title("📹 Інтеграція з медіа")
     st.markdown("""
     Прив'яжіть відеозаписи матчів до аналітичних нотаток. Вставляйте YouTube-посилання,
-    переглядайте відео прямо в застосунку та зберігайте спостереження в базу даних.
-    Розділ «Фото схем» дозволяє архівувати знімки тактичних дощок з тренувань.
+    переглядайте відео прямо в застосунку, залишайте нотатки з прив'язкою до конкретної секунди
+    відео (як у коментарях YouTube) — теги на кшталт «Гол», «Помилка», «Сейв» проставляються
+    автоматично за змістом тексту. Розділ «Фото схем» дозволяє архівувати знімки тактичних
+    дощок з тренувань.
     """)
 
     tab_video, tab_photo = st.tabs(["📹 Аналіз Відео", "📸 Фото схем"])
@@ -2652,7 +2767,7 @@ def render_media_integration():
         with col_vid:
             if youtube_url:
                 try:
-                    st.video(youtube_url)
+                    st.video(youtube_url, start_time=int(st.session_state.video_jump_time))
                 except Exception:
                     st.error("Помилка завантаження відео. Перевірте правильність посилання.")
             else:
@@ -2672,6 +2787,67 @@ def render_media_integration():
 
             word_count = len(notes.split()) if notes else 0
             st.caption(f"📝 Слів у нотатках: **{word_count}**")
+
+        st.divider()
+        st.subheader("⏱️ Нотатки з таймкодом")
+        st.caption(
+            "Прив'язуйте коментар до конкретної секунди відео — як у коментарях YouTube. "
+            "Теги (⚽ Гол, 🧤 Сейв, ❌ Помилка тощо) визначаються автоматично за текстом нотатки, "
+            "але їх завжди можна скоригувати вручну."
+        )
+
+        with st.form("timecode_note_form", clear_on_submit=True):
+            tc1, tc2 = st.columns([1, 1])
+            tc_minutes = tc1.number_input("Хвилина", min_value=0, max_value=999, value=0, key="tc_min")
+            tc_seconds = tc2.number_input("Секунда", min_value=0, max_value=59, value=0, key="tc_sec")
+            timecode_note_text = st.text_area(
+                "Коментар до цього моменту:",
+                placeholder="напр. «Гол з кутового після навісу» або «Помилка захисника на фланзі»",
+                height=80, key="tc_note_text"
+            )
+            suggested_tags = auto_detect_tags(timecode_note_text)
+            selected_tags = st.multiselect(
+                "🏷️ Теги (авто-визначені за текстом, можна змінити):",
+                options=list(AUTO_TAG_KEYWORDS.keys()),
+                default=suggested_tags,
+                key="tc_tags"
+            )
+            if st.form_submit_button("➕ Додати нотатку з таймкодом", type="primary", use_container_width=True):
+                if not youtube_url:
+                    st.error("⚠️ Спочатку вкажіть посилання на відео вище.")
+                elif not timecode_note_text.strip():
+                    st.error("⚠️ Введіть текст нотатки.")
+                else:
+                    total_seconds = int(tc_minutes) * 60 + int(tc_seconds)
+                    tags_str = ", ".join(selected_tags)
+                    db_save_timecoded_note(youtube_url, total_seconds, timecode_note_text.strip(), tags_str)
+                    st.success(f"✅ Нотатку на {format_timecode(total_seconds)} додано!")
+                    st.rerun()
+
+        if youtube_url:
+            timecoded_notes = db_load_timecoded_notes(youtube_url)
+            if timecoded_notes:
+                st.markdown(f"**⏱️ Таймлайн нотаток для цього відео ({len(timecoded_notes)}):**")
+                for tn in timecoded_notes:
+                    tcol1, tcol2, tcol3 = st.columns([1, 5, 1])
+                    with tcol1:
+                        if st.button(f"▶️ {format_timecode(tn['timecode_seconds'])}", key=f"jump_{tn['id']}", use_container_width=True):
+                            st.session_state.video_jump_time = tn['timecode_seconds']
+                            st.rerun()
+                    with tcol2:
+                        st.write(tn['note'])
+                        if tn['tags']:
+                            tag_badges = " ".join(f"`{t.strip()}`" for t in tn['tags'].split(",") if t.strip())
+                            st.caption(f"🏷️ {tag_badges}")
+                    with tcol3:
+                        if st.button("🗑️", key=f"del_tc_{tn['id']}"):
+                            db_delete_timecoded_note(tn['id'])
+                            st.rerun()
+                    st.divider()
+            else:
+                st.info("Для цього відео ще немає нотаток із таймкодом — додайте першу вище.")
+        else:
+            st.info("Вкажіть посилання на відео, щоб додавати нотатки з таймкодом.")
 
         st.divider()
         all_notes = db_load_video_notes()
@@ -2722,6 +2898,17 @@ def render_media_integration():
             "handler": db_import_video_notes
         },
         note="Імпорт додає нові відеонотатки до бази даних."
+    )
+    timecoded_notes_df = pd.DataFrame(db_load_timecoded_notes())
+    render_export_import_block(
+        section_key="media_timecodes",
+        export_data={"Нотатки з таймкодом": timecoded_notes_df},
+        import_config={
+            "columns_hint": "video_url, timecode_seconds, note, tags",
+            "label": "нотатки з таймкодом",
+            "handler": db_import_timecoded_notes
+        },
+        note="⏱️ Таймкод-нотатки — імпорт додає нові записи до бази даних."
     )
 
 
@@ -2784,12 +2971,127 @@ def generate_heatmap_internal(positions, resolution=40):
     return heatmap
 
 
+# ---------- РЕАЛЬНА ДЕТЕКЦІЯ ОБ'ЄКТІВ (YOLOv8) ----------
+
+@st.cache_resource(show_spinner=False)
+def load_yolo_model():
+    """Завантажує (і кешує на весь час роботи застосунку) попередньо натреновану модель YOLOv8n."""
+    return YOLO("yolov8n.pt")
+
+
+def run_yolo_person_detection(video_path: str, max_frames: int = 5, conf_threshold: float = 0.35):
+    """
+    Реальна детекція людей на відео за допомогою YOLOv8 (на відміну від симуляції нижче).
+    Рівномірно вибирає до `max_frames` кадрів із відео та шукає на них клас "person".
+    Повертає (annotated_frame_rgb | None, [{"frame", "people_detected", "avg_confidence"}, ...] | None).
+    """
+    if not (CV2_AVAILABLE and YOLO_AVAILABLE):
+        return None, None
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        cap.release()
+        return None, None
+
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
+    sample_indices = np.linspace(0, max(total_frames - 1, 0), num=min(max_frames, total_frames), dtype=int)
+
+    model = load_yolo_model()
+    detections_summary = []
+    annotated_preview = None
+
+    for idx in sample_indices:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
+        ok, frame = cap.read()
+        if not ok:
+            continue
+
+        results = model(frame, verbose=False)[0]
+        person_boxes = []
+        for box in results.boxes:
+            cls_id = int(box.cls[0])
+            label = model.names.get(cls_id, str(cls_id))
+            conf = float(box.conf[0])
+            if label == "person" and conf >= conf_threshold:
+                person_boxes.append({"box": box.xyxy[0].tolist(), "confidence": round(conf, 2)})
+
+        detections_summary.append({
+            "Кадр": int(idx),
+            "Виявлено людей": len(person_boxes),
+            "Середня впевненість": round(np.mean([b["confidence"] for b in person_boxes]), 2) if person_boxes else 0.0
+        })
+
+        if annotated_preview is None and person_boxes:
+            annotated = frame.copy()
+            for b in person_boxes:
+                x1, y1, x2, y2 = map(int, b["box"])
+                cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.putText(annotated, f"person {b['confidence']:.2f}", (x1, max(y1 - 8, 0)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            annotated_preview = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
+
+    cap.release()
+    return annotated_preview, detections_summary
+
+
+def render_heatmap_panel(heatmap, resolution, title):
+    """Малює теплову карту поля + зональну статистику + аналіз флангів для переданого масиву heatmap."""
+    fig, ax = plt.subplots(figsize=(12, 7))
+    ax.set_facecolor('#1a5c23')
+    cmap = LinearSegmentedColormap.from_list('heat', ['#1a5c23', '#ffdd00', '#ff6600', '#cc0000'])
+    ax.imshow(heatmap, extent=[0, 105, 0, 68], origin='lower', cmap=cmap, alpha=0.75, aspect='auto')
+    ax.add_patch(patches.Rectangle((0, 0), 105, 68, linewidth=2, edgecolor='white', facecolor='none'))
+    ax.plot([52.5, 52.5], [0, 68], 'w-', linewidth=1.5)
+    ax.set_title(title, color='white', fontsize=12)
+    fig.patch.set_facecolor('#0d3318')
+    ax.tick_params(colors='white')
+    st.pyplot(fig)
+    plt.close(fig)
+
+    st.subheader("📐 Зональна статистика")
+    st.caption("Поле розділене на три зони: захист (0–35м), середина (35–70м), атака (70–105м).")
+    zones = {
+        "🔵 Захист (0–35м)": heatmap[:, :int(resolution * 35 / 105)],
+        "🟡 Середина (35–70м)": heatmap[:, int(resolution * 35 / 105):int(resolution * 70 / 105)],
+        "🔴 Атака (70–105м)": heatmap[:, int(resolution * 70 / 105):]
+    }
+    zcols = st.columns(3)
+    zone_pcts = []
+    for col, (zone_name, zone_data) in zip(zcols, zones.items()):
+        pct = zone_data.mean() * 100
+        zone_pcts.append(pct)
+        col.metric(zone_name, f"{pct:.1f}%")
+
+    max_zone_idx = int(np.argmax(zone_pcts))
+    zone_labels = ["зоні захисту", "середині поля", "зоні атаки"]
+    zone_advice = [
+        "⚠️ Активність зосереджена глибоко — переважно оборонна тактика або тиск суперника.",
+        "✅ Контроль центру поля — збалансована позиційна гра.",
+        "🔥 Висока активність в атаці — агресивний наступальний стиль."
+    ]
+    st.info(f"🧠 **Тактичний висновок:** Найбільша активність у **{zone_labels[max_zone_idx]}** ({zone_pcts[max_zone_idx]:.1f}%). {zone_advice[max_zone_idx]}")
+
+    st.subheader("↔️ Аналіз флангів")
+    st.caption("Розподіл активності між лівим (нижня половина поля) та правим флангом (верхня половина).")
+    left_half = heatmap[:resolution // 2, :]
+    right_half = heatmap[resolution // 2:, :]
+    left_pct = left_half.mean() * 100
+    right_pct = right_half.mean() * 100
+    fl1, fl2, fl3 = st.columns(3)
+    fl1.metric("⬅️ Лівий фланг", f"{left_pct:.1f}%")
+    fl2.metric("➡️ Правий фланг", f"{right_pct:.1f}%")
+    dominant_flank = "лівий" if left_pct > right_pct else "правий"
+    fl3.metric("🎯 Домінуючий фланг", dominant_flank.upper())
+
+
 def render_cv_analysis():
     st.title("🎥 Computer Vision: Автоматичний аналіз відео")
     st.markdown("""
     Модуль комп'ютерного зору автоматично відстежує переміщення гравців і м'яча,
-    будує теплові карти активності, розраховує фізичні показники (дистанція, швидкість)
-    та фіксує ключові ігрові події. У демо-режимі дані симулюються без реального відео.
+    будує теплові карти активності (як командні, так і для окремого гравця), розраховує
+    фізичні показники (дистанція, швидкість) та фіксує ключові ігрові події.
+    У демо-режимі дані симулюються без реального відео; за наявності бібліотек
+    OpenCV + Ultralytics YOLO доступна реальна детекція людей на завантаженому відео.
     """)
 
     tab_input, tab_tracking, tab_heatmap, tab_physics, tab_events = st.tabs([
@@ -2804,9 +3106,63 @@ def render_cv_analysis():
 
         if source_mode == "📹 Завантажити відеофайл":
             st.info("📌 Підтримувані формати: MP4, AVI, MOV.")
-            st.file_uploader("Завантажте відеозапис:", type=["mp4", "avi", "mov"])
-            if st.button("🚀 Запустити аналіз відео", type="primary", use_container_width=True):
-                st.error("⚠️ Для реального аналізу потрібна бібліотека OpenCV: `pip install opencv-python-headless`")
+            uploaded_video = st.file_uploader("Завантажте відеозапис:", type=["mp4", "avi", "mov"], key="cv_video_upload")
+
+            if CV2_AVAILABLE and YOLO_AVAILABLE:
+                st.success("✅ OpenCV та Ultralytics YOLO доступні — можна запустити реальну детекцію людей на відео.")
+            else:
+                missing = []
+                if not CV2_AVAILABLE:
+                    missing.append("opencv-python-headless")
+                if not YOLO_AVAILABLE:
+                    missing.append("ultralytics")
+                st.warning(
+                    f"⚠️ Для реальної детекції об'єктів (YOLO) не вистачає бібліотек: `{'`, `'.join(missing)}`. "
+                    f"Додайте їх у requirements.txt (`pip install {' '.join(missing)}`), щоб увімкнути цю функцію. "
+                    "Модель YOLOv8n (~6 МБ) автоматично завантажиться при першому запуску. "
+                    "Поки що доступна демо-симуляція нижче."
+                )
+
+            yc1, yc2 = st.columns(2)
+            conf_threshold = yc1.slider("Поріг впевненості детекції", 0.1, 0.9, 0.35, 0.05, key="yolo_conf")
+            max_sample_frames = yc2.slider("Кількість кадрів для аналізу", 1, 15, 5, key="yolo_max_frames")
+
+            if st.button("🎯 Запустити детекцію об'єктів (YOLO)", type="primary", use_container_width=True):
+                if uploaded_video is None:
+                    st.error("⚠️ Спочатку завантажте відеофайл вище.")
+                elif not (CV2_AVAILABLE and YOLO_AVAILABLE):
+                    st.error("⚠️ Для реального аналізу потрібні бібліотеки OpenCV та Ultralytics YOLO (див. попередження вище).")
+                else:
+                    with st.spinner("Завантажуємо модель YOLOv8 і аналізуємо кадри відео..."):
+                        suffix = "." + uploaded_video.name.split(".")[-1]
+                        tmp_video_fd, tmp_video_path = tempfile.mkstemp(suffix=suffix)
+                        os.close(tmp_video_fd)
+                        with open(tmp_video_path, "wb") as f:
+                            f.write(uploaded_video.getbuffer())
+                        try:
+                            annotated_preview, detections_summary = run_yolo_person_detection(
+                                tmp_video_path, max_frames=max_sample_frames, conf_threshold=conf_threshold
+                            )
+                        except Exception as e:
+                            annotated_preview, detections_summary = None, None
+                            st.error(f"Помилка під час детекції: {e}")
+                        finally:
+                            if os.path.exists(tmp_video_path):
+                                os.remove(tmp_video_path)
+
+                    if detections_summary is not None:
+                        st.success(f"✅ Проаналізовано {len(detections_summary)} кадрів відео.")
+                        det_df = pd.DataFrame(detections_summary)
+                        st.dataframe(det_df, use_container_width=True, hide_index=True)
+                        if annotated_preview is not None:
+                            st.image(annotated_preview, caption="Приклад кадру з реальною детекцією людей (YOLOv8)", use_container_width=True)
+                        else:
+                            st.info("На проаналізованих кадрах людей не виявлено (або кадри не вдалося зчитати).")
+                        st.caption(
+                            "ℹ️ Це реальні bounding boxes, знайдені YOLOv8 на відео, а не симуляція. "
+                            "Перетворення піксельних координат кадру в координати поля (гомографія камери) "
+                            "поки не реалізоване — для тактичної теплокарти скористайтесь демо-симуляцією нижче."
+                        )
         else:
             col_cfg1, col_cfg2, col_cfg3 = st.columns(3)
             demo_players = col_cfg1.slider("Гравців у команді:", 3, 8, 5)
@@ -2898,7 +3254,11 @@ def render_cv_analysis():
         teams_data = st.session_state.cv_teams_data
         ball_positions = st.session_state.cv_ball_positions
 
-        hm_mode = st.radio("Режим відображення:", ["Одна команда / М'яч", "Порівняння двох команд"], horizontal=True)
+        hm_mode = st.radio(
+            "Режим відображення:",
+            ["Одна команда / М'яч", "👤 Один гравець", "Порівняння двох команд"],
+            horizontal=True
+        )
 
         if hm_mode == "Одна команда / М'яч":
             selected_team_hm = st.selectbox("Оберіть команду:", list(teams_data.keys()) + ["М'яч"])
@@ -2918,52 +3278,37 @@ def render_cv_analysis():
             if heatmap.max() > 0:
                 heatmap = heatmap / heatmap.max()
 
-            fig, ax = plt.subplots(figsize=(12, 7))
-            ax.set_facecolor('#1a5c23')
-            cmap = LinearSegmentedColormap.from_list('heat', ['#1a5c23', '#ffdd00', '#ff6600', '#cc0000'])
-            ax.imshow(heatmap, extent=[0, 105, 0, 68], origin='lower', cmap=cmap, alpha=0.75, aspect='auto')
-            ax.add_patch(patches.Rectangle((0, 0), 105, 68, linewidth=2, edgecolor='white', facecolor='none'))
-            ax.plot([52.5, 52.5], [0, 68], 'w-', linewidth=1.5)
-            ax.set_title(title, color='white', fontsize=12)
-            fig.patch.set_facecolor('#0d3318')
-            ax.tick_params(colors='white')
-            st.pyplot(fig)
-            plt.close(fig)
+            render_heatmap_panel(heatmap, resolution, title)
 
-            st.subheader("📐 Зональна статистика")
-            st.caption("Поле розділене на три зони: захист (0–35м), середина (35–70м), атака (70–105м).")
-            zones = {
-                "🔵 Захист (0–35м)": heatmap[:, :int(resolution * 35 / 105)],
-                "🟡 Середина (35–70м)": heatmap[:, int(resolution * 35 / 105):int(resolution * 70 / 105)],
-                "🔴 Атака (70–105м)": heatmap[:, int(resolution * 70 / 105):]
-            }
-            zcols = st.columns(3)
-            zone_pcts = []
-            for col, (zone_name, zone_data) in zip(zcols, zones.items()):
-                pct = zone_data.mean() * 100
-                zone_pcts.append(pct)
-                col.metric(zone_name, f"{pct:.1f}%")
+        elif hm_mode == "👤 Один гравець":
+            st.caption("Теплова карта активності конкретного гравця — зручно перевірити його реальну зону дій та дисципліну позиціонування.")
+            resolution = 40
+            hp_team = st.selectbox("Команда:", list(teams_data.keys()), key="heatmap_player_team")
+            team_frames = teams_data.get(hp_team, [])
+            num_players_hp = max((len(f) for f in team_frames), default=0)
 
-            max_zone_idx = int(np.argmax(zone_pcts))
-            zone_labels = ["зоні захисту", "середині поля", "зоні атаки"]
-            zone_advice = [
-                "⚠️ Команда грає глибоко — переважно оборонна тактика або тиск суперника.",
-                "✅ Контроль центру поля — збалансована позиційна гра.",
-                "🔥 Висока активність в атаці — агресивний наступальний стиль."
-            ]
-            st.info(f"🧠 **Тактичний висновок:** Найбільша активність у **{zone_labels[max_zone_idx]}** ({zone_pcts[max_zone_idx]:.1f}%). {zone_advice[max_zone_idx]}")
+            if num_players_hp == 0:
+                st.warning("Немає даних трекінгу для цієї команди.")
+            else:
+                hp_player_idx = st.selectbox(
+                    "Гравець:", list(range(num_players_hp)),
+                    format_func=lambda x: f"#{x + 1}", key="heatmap_player_idx"
+                )
+                player_positions = [f[hp_player_idx] for f in team_frames if hp_player_idx < len(f)]
 
-            st.subheader("↔️ Аналіз флангів")
-            st.caption("Розподіл активності між лівим (нижня половина поля) та правим флангом (верхня половина).")
-            left_half = heatmap[:resolution // 2, :]
-            right_half = heatmap[resolution // 2:, :]
-            left_pct = left_half.mean() * 100
-            right_pct = right_half.mean() * 100
-            fl1, fl2, fl3 = st.columns(3)
-            fl1.metric("⬅️ Лівий фланг", f"{left_pct:.1f}%")
-            fl2.metric("➡️ Правий фланг", f"{right_pct:.1f}%")
-            dominant_flank = "лівий" if left_pct > right_pct else "правий"
-            fl3.metric("🎯 Домінуючий фланг", dominant_flank.upper())
+                heatmap = generate_heatmap_internal(player_positions, resolution=resolution)
+                if heatmap.max() > 0:
+                    heatmap = heatmap / heatmap.max()
+
+                title = f"Теплова карта: {hp_team} — Гравець #{hp_player_idx + 1}"
+                render_heatmap_panel(heatmap, resolution, title)
+
+                # Порівняння активності гравця із середньою активністю команди
+                team_heatmap = generate_heatmap_internal(team_frames, resolution=resolution)
+                if team_heatmap.max() > 0:
+                    team_heatmap = team_heatmap / team_heatmap.max()
+                player_share = (heatmap.sum() / team_heatmap.sum() * 100) if team_heatmap.sum() > 0 else 0
+                st.caption(f"📌 Частка активності цього гравця відносно сумарної активності команди: **{player_share:.1f}%**.")
 
         else:
             st.caption("Порівняйте зони активності обох команд одночасно.")
