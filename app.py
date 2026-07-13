@@ -744,6 +744,70 @@ def db_load_match_history() -> list:
     return [dict(r) for r in rows]
 
 
+def db_load_all_match_history() -> list:
+    """Без ліміту в 50 — використовується для турнірної таблиці, щоб врахувати абсолютно всі матчі."""
+    conn = get_connection()
+    rows = conn.execute("SELECT * FROM match_logs ORDER BY created_at DESC").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def build_tournament_standings(history: list) -> pd.DataFrame:
+    """
+    Будує турнірну таблицю (ранжування гравців) на основі всіх збережених симуляцій матчів.
+    Перемога = 3 очки, поразка = 0 (нічиїх у симуляторі не буває — за рахунку 0:0 переможець
+    визначається одразу за показниками, тому DB завжди містить конкретного переможця).
+    """
+    stats = {}
+    for h in history:
+        p1, p2 = h.get('player1'), h.get('player2')
+        if not p1 or not p2:
+            continue
+        s1, s2 = h.get('score1', 0) or 0, h.get('score2', 0) or 0
+        winner = h.get('winner')
+
+        for p in (p1, p2):
+            if p not in stats:
+                stats[p] = {"Матчів": 0, "Перемог": 0, "Поразок": 0, "Голів забито": 0, "Голів пропущено": 0}
+
+        stats[p1]["Матчів"] += 1
+        stats[p2]["Матчів"] += 1
+        stats[p1]["Голів забито"] += s1
+        stats[p1]["Голів пропущено"] += s2
+        stats[p2]["Голів забито"] += s2
+        stats[p2]["Голів пропущено"] += s1
+
+        if winner == p1:
+            stats[p1]["Перемог"] += 1
+            stats[p2]["Поразок"] += 1
+        elif winner == p2:
+            stats[p2]["Перемог"] += 1
+            stats[p1]["Поразок"] += 1
+
+    if not stats:
+        return pd.DataFrame(columns=["Гравець", "Матчів", "Перемог", "Поразок", "Голів забито",
+                                      "Голів пропущено", "Різниця голів", "Очки"])
+
+    rows = []
+    for player, s in stats.items():
+        rows.append({
+            "Гравець": player,
+            "Матчів": s["Матчів"],
+            "Перемог": s["Перемог"],
+            "Поразок": s["Поразок"],
+            "Голів забито": s["Голів забито"],
+            "Голів пропущено": s["Голів пропущено"],
+            "Різниця голів": s["Голів забито"] - s["Голів пропущено"],
+            "Очки": s["Перемог"] * 3,
+        })
+
+    standings_df = pd.DataFrame(rows).sort_values(
+        ["Очки", "Різниця голів", "Голів забито"], ascending=False
+    ).reset_index(drop=True)
+    standings_df.index = standings_df.index + 1
+    return standings_df
+
+
 # ---------- TACTIC NOTES ----------
 
 def db_save_tactic_note(player: str, tactic: str, notes: str):
@@ -1515,7 +1579,7 @@ def main():
             "📚 Ресурси та Освіта",
             "💾 Експорт Даних"
         ]
-        choice = st.radio("Навігація", menu)
+        choice = st.radio("Навігація", menu, key="nav_choice")
         st.divider()
 
         st.subheader("🔗 Корисні посилання")
@@ -3607,6 +3671,50 @@ def render_cv_analysis():
 # 5.7 OCR ТАКТИЧНИХ ФОТО
 # ==========================================
 
+def resync_ocr_markers(red_markers, blue_markers, arrows, db_df):
+    """
+    Повторно синхронізує (можливо, вручну виправлені) маркери з базою гравців.
+    Виокремлено з analyze_tactical_photo_simulation, щоб перевикористовувати
+    після ручного редагування номерів у вкладці «✏️ Редагувати результати».
+    """
+    synchronized_players = []
+    for marker in red_markers + blue_markers:
+        db_match = db_df[db_df['Номер'] == marker["number"]] if 'Номер' in db_df.columns else pd.DataFrame()
+        if not db_match.empty:
+            player_row = db_match.iloc[0]
+            player_name = player_row["Ім'я"]
+            player_speed = player_row["Швидкість"]
+            player_stamina = player_row["Витривалість"]
+        else:
+            player_name = f"Гравець #{marker['number']}"
+            player_speed = random.uniform(20, 32)
+            player_stamina = random.uniform(50, 90)
+
+        player_arrow = next((a for a in arrows if abs(a["from_x"] - marker["x"]) < 2 and abs(a["from_y"] - marker["y"]) < 2), None)
+
+        if player_arrow:
+            dist = player_arrow["distance_m"]
+            maneuver_difficulty = "✅ Реалізовано" if not (dist > 30 and player_speed < 25) else "⚠️ Складно"
+            if dist > 40:
+                maneuver_difficulty = "❌ Задовго для маневру"
+        else:
+            dist, maneuver_difficulty = None, "—"
+
+        synchronized_players.append({
+            "Маркер": f"#{marker['number']}",
+            "Команда": "🔴 Червона" if marker["color"] == "red" else "🔵 Синя",
+            "Гравець": player_name,
+            "Позиція X (м)": marker["x"],
+            "Позиція Y (м)": marker["y"],
+            "Швидкість": round(player_speed, 1),
+            "Витривалість": round(player_stamina, 0),
+            "Дистанція маневру (м)": dist,
+            "Виконуваність": maneuver_difficulty,
+            "Впевненість OCR": f"{marker['confidence']*100:.0f}%"
+        })
+    return synchronized_players
+
+
 def analyze_tactical_photo_simulation(db_df):
     np.random.seed(42)
     num_red = random.randint(3, 6)
@@ -3646,40 +3754,7 @@ def analyze_tactical_photo_simulation(db_df):
             "distance_m": round(np.sqrt(dx**2+dy**2), 1)
         })
 
-    synchronized_players = []
-    for marker in red_markers + blue_markers:
-        db_match = db_df[db_df['Номер'] == marker["number"]] if 'Номер' in db_df.columns else pd.DataFrame()
-        if not db_match.empty:
-            player_row = db_match.iloc[0]
-            player_name = player_row["Ім'я"]
-            player_speed = player_row["Швидкість"]
-            player_stamina = player_row["Витривалість"]
-        else:
-            player_name = f"Гравець #{marker['number']}"
-            player_speed = random.uniform(20, 32)
-            player_stamina = random.uniform(50, 90)
-
-        player_arrow = next((a for a in arrows if abs(a["from_x"]-marker["x"]) < 2 and abs(a["from_y"]-marker["y"]) < 2), None)
-
-        if player_arrow:
-            dist = player_arrow["distance_m"]
-            maneuver_difficulty = "✅ Реалізовано" if not (dist > 30 and player_speed < 25) else "⚠️ Складно"
-            if dist > 40: maneuver_difficulty = "❌ Задовго для маневру"
-        else:
-            dist, maneuver_difficulty = None, "—"
-
-        synchronized_players.append({
-            "Маркер": f"#{marker['number']}",
-            "Команда": "🔴 Червона" if marker["color"] == "red" else "🔵 Синя",
-            "Гравець": player_name,
-            "Позиція X (м)": marker["x"],
-            "Позиція Y (м)": marker["y"],
-            "Швидкість": round(player_speed, 1),
-            "Витривалість": round(player_stamina, 0),
-            "Дистанція маневру (м)": dist,
-            "Виконуваність": maneuver_difficulty,
-            "Впевненість OCR": f"{marker['confidence']*100:.0f}%"
-        })
+    synchronized_players = resync_ocr_markers(red_markers, blue_markers, arrows, db_df)
 
     return {
         "red_markers": red_markers, "blue_markers": blue_markers,
@@ -3737,7 +3812,10 @@ def render_tactical_ocr(df):
     Завантажте або сфотографуйте тактичну дошку — система автоматично розпізнає
     кольорові фішки, номери гравців та стрілки переміщення. Результати синхронізуються
     з базою гравців: для кожного маневру перевіряється його реалістичність
-    з урахуванням швидкості та витривалості конкретного спортсмена.
+    з урахуванням швидкості та витривалості конкретного спортсмена. Помилки OCR
+    (наприклад, неправильно розпізнаний номер) можна виправити вручну у вкладці
+    «✏️ Редагувати результати», а готову схему — надіслати прямо на «Тактичну дошку»
+    для подальшого редагування.
     """)
 
     col_mode1, col_mode2 = st.columns(2)
@@ -3814,9 +3892,9 @@ def render_tactical_ocr(df):
         col_s4.metric("👥 Синхронізовано", len(result["synchronized_players"]))
         st.divider()
 
-        res_tab1, res_tab2, res_tab3, res_tab4 = st.tabs([
+        res_tab1, res_tab2, res_tab3, res_tab4, res_tab5 = st.tabs([
             "🗺️ Цифрова схема", "📋 Гравці та маневри",
-            "↗️ Векторизовані стрілки", "📊 Аналіз виконуваності"
+            "↗️ Векторизовані стрілки", "📊 Аналіз виконуваності", "✏️ Редагувати результати"
         ])
 
         with res_tab1:
@@ -3913,8 +3991,67 @@ def render_tactical_ocr(df):
                     else:
                         st.error(f"❌ Тактика потребує перегляду: лише {success_rate:.0f}% маневрів реалістичні.")
 
+        with res_tab5:
+            st.subheader("✏️ Ручне редагування результатів OCR")
+            st.caption(
+                "Якщо система неправильно розпізнала номер гравця на фішці — виправте його тут "
+                "і збережіть коректні дані в базу. Позиція X/Y і впевненість OCR лишаються для довідки."
+            )
+
+            edit_red_df = pd.DataFrame(result["red_markers"])
+            edit_blue_df = pd.DataFrame(result["blue_markers"])
+
+            marker_column_config = {
+                "number": st.column_config.NumberColumn("Номер", min_value=1, max_value=99, step=1),
+                "x": st.column_config.NumberColumn("X (м)", disabled=True, format="%.1f"),
+                "y": st.column_config.NumberColumn("Y (м)", disabled=True, format="%.1f"),
+                "confidence": st.column_config.NumberColumn("Впевненість OCR", disabled=True, format="%.2f"),
+            }
+
+            st.markdown("**🔴 Червона команда**")
+            if not edit_red_df.empty:
+                edited_red = st.data_editor(
+                    edit_red_df[["number", "x", "y", "confidence"]],
+                    column_config=marker_column_config,
+                    hide_index=True, use_container_width=True, key="ocr_edit_red", num_rows="fixed"
+                )
+            else:
+                edited_red = edit_red_df
+                st.info("Немає червоних фішок для редагування.")
+
+            st.markdown("**🔵 Синя команда**")
+            if not edit_blue_df.empty:
+                edited_blue = st.data_editor(
+                    edit_blue_df[["number", "x", "y", "confidence"]],
+                    column_config=marker_column_config,
+                    hide_index=True, use_container_width=True, key="ocr_edit_blue", num_rows="fixed"
+                )
+            else:
+                edited_blue = edit_blue_df
+                st.info("Немає синіх фішок для редагування.")
+
+            if st.button("💾 Застосувати правки та зберегти в базу", type="primary", use_container_width=True, key="ocr_apply_edits"):
+                corrected_red = [
+                    {**row, "number": int(row["number"]), "color": "red"}
+                    for row in edited_red.to_dict("records")
+                ] if not edited_red.empty else []
+                corrected_blue = [
+                    {**row, "number": int(row["number"]), "color": "blue"}
+                    for row in edited_blue.to_dict("records")
+                ] if not edited_blue.empty else []
+
+                new_synchronized = resync_ocr_markers(corrected_red, corrected_blue, result["arrows"], df)
+
+                result["red_markers"] = corrected_red
+                result["blue_markers"] = corrected_blue
+                result["synchronized_players"] = new_synchronized
+                st.session_state.ocr_result = result
+                db_save_ocr_result(result)
+                st.success("✅ Виправлення застосовано, дані пересинхронізовано з базою гравців і збережено!")
+                st.rerun()
+
         st.divider()
-        col_clear, col_export = st.columns(2)
+        col_clear, col_export, col_send = st.columns(3)
         with col_clear:
             if st.button("🗑️ Очистити результати", use_container_width=True):
                 st.session_state.ocr_result = None
@@ -3925,6 +4062,17 @@ def render_tactical_ocr(df):
                 export_df = pd.DataFrame(result["synchronized_players"])
                 st.download_button("📥 Експортувати CSV", export_df.to_csv(index=False).encode('utf-8'),
                                    "tactical_ocr_result.csv", mime="text/csv", use_container_width=True)
+        with col_send:
+            replace_points = st.checkbox("Замінити точки на дошці", value=True, key="ocr_send_replace")
+            if st.button("📤 На Тактичну дошку", use_container_width=True, key="ocr_send_to_board"):
+                all_points = [(m["x"], m["y"]) for m in result["red_markers"] + result["blue_markers"]]
+                if replace_points:
+                    st.session_state.tactic_points = all_points
+                else:
+                    st.session_state.tactic_points = st.session_state.get("tactic_points", []) + all_points
+                st.session_state["nav_choice"] = "🗺️ Тактична дошка"
+                st.success(f"✅ {len(all_points)} точок відправлено на тактичну дошку! Перемикаємось на розділ...")
+                st.rerun()
 
     st.divider()
     ocr_export_data = {}
@@ -3953,7 +4101,7 @@ def render_physics(df):
     player = st.selectbox("Оберіть спортсмена:", df["Ім'я"])
     data = df[df["Ім'я"] == player].iloc[0]
 
-    tab_proj, tab_energy = st.tabs(["🏹 Траєкторія удару", "⚡ Енергетичний аналіз"])
+    tab_proj, tab_energy, tab_compare = st.tabs(["🏹 Траєкторія удару", "⚡ Енергетичний аналіз", "🆚 Порівняння ударів"])
 
     with tab_proj:
         st.subheader("Параболічна траєкторія")
@@ -4028,6 +4176,72 @@ def render_physics(df):
         st.pyplot(fig2)
         plt.close(fig2)
 
+    with tab_compare:
+        st.subheader("🆚 Порівняння двох ударів")
+        st.caption(
+            "Накладіть дві параболи одна на одну — наприклад, «Удар новачка» проти «Удару профі» — "
+            "щоб наочно побачити різницю в дальності, висоті та часі польоту."
+        )
+
+        g = 9.81
+        col_shot1, col_shot2 = st.columns(2)
+
+        with col_shot1:
+            st.markdown("**🔴 Удар 1**")
+            label1 = st.text_input("Назва", value="Удар новачка", key="cmp_label1")
+            v0_1 = st.slider("Початкова швидкість (м/с)", 5.0, 50.0, 15.0, key="cmp_v1")
+            angle_1 = st.slider("Кут польоту (°)", 10, 80, 25, key="cmp_angle1")
+
+        with col_shot2:
+            st.markdown("**🔵 Удар 2**")
+            label2 = st.text_input("Назва", value="Удар профі", key="cmp_label2")
+            v0_2 = st.slider("Початкова швидкість (м/с)", 5.0, 50.0, 35.0, key="cmp_v2")
+            angle_2 = st.slider("Кут польоту (°)", 10, 80, 40, key="cmp_angle2")
+
+        def compute_trajectory(v0, angle):
+            rad = np.radians(angle)
+            t_f = (2 * v0 * np.sin(rad)) / g
+            t = np.linspace(0, t_f, 200)
+            x = v0 * np.cos(rad) * t
+            y = v0 * np.sin(rad) * t - 0.5 * g * t ** 2
+            max_height = (v0 * np.sin(rad)) ** 2 / (2 * g)
+            return x, y, t_f, max_height, x[-1] if len(x) else 0.0
+
+        x1, y1, tf1, h1, r1 = compute_trajectory(v0_1, angle_1)
+        x2, y2, tf2, h2, r2 = compute_trajectory(v0_2, angle_2)
+
+        fig_cmp, ax_cmp = plt.subplots(figsize=(10, 4.5))
+        ax_cmp.plot(x1, y1, color="#FF5252", linewidth=2.5, label=f"{label1} ({angle_1}°, {v0_1:.0f} м/с)")
+        ax_cmp.fill_between(x1, 0, y1, alpha=0.12, color="#FF5252")
+        ax_cmp.plot(x2, y2, color="#448AFF", linewidth=2.5, label=f"{label2} ({angle_2}°, {v0_2:.0f} м/с)")
+        ax_cmp.fill_between(x2, 0, y2, alpha=0.12, color="#448AFF")
+        ax_cmp.axhline(0, color='white', linewidth=0.5, linestyle='--')
+        ax_cmp.set_title("Порівняння траєкторій ударів", color='white')
+        ax_cmp.set_xlabel("Відстань (м)", color='white')
+        ax_cmp.set_ylabel("Висота (м)", color='white')
+        ax_cmp.set_facecolor('#1a1a2e')
+        ax_cmp.tick_params(colors='white')
+        ax_cmp.legend(facecolor='#1a1a2e', labelcolor='white')
+        fig_cmp.patch.set_facecolor('#0d0d1a')
+        st.pyplot(fig_cmp)
+        plt.close(fig_cmp)
+
+        st.subheader("📊 Показники порівняння")
+        compare_shots_df = pd.DataFrame({
+            "Показник": ["Дальність польоту (м)", "Максимальна висота (м)", "Час польоту (с)"],
+            label1: [round(r1, 1), round(h1, 1), round(tf1, 2)],
+            label2: [round(r2, 1), round(h2, 1), round(tf2, 2)],
+        }).set_index("Показник")
+        st.dataframe(compare_shots_df, use_container_width=True)
+
+        range_diff = r2 - r1
+        if abs(range_diff) < 1:
+            st.info(f"⚖️ **{label1}** і **{label2}** мають майже однакову дальність — різниця менш ніж 1 м.")
+        else:
+            better = label2 if range_diff > 0 else label1
+            worse = label1 if range_diff > 0 else label2
+            st.success(f"🎯 **{better}** ефективніший за **{worse}** на **{abs(range_diff):.1f} м** дальності польоту.")
+
     st.divider()
     render_export_import_block(
         section_key="physics",
@@ -4075,6 +4289,18 @@ def render_simulator(df):
         with st.spinner("Свисток! Матч розпочався..."):
             time.sleep(1.5)
 
+        def describe_form(factor):
+            if factor >= 1.12: return "🔥 Відмінна форма"
+            elif factor >= 1.03: return "📈 Гарна форма"
+            elif factor >= 0.95: return "➡️ Звичайна форма"
+            elif factor >= 0.88: return "📉 Не в найкращій формі"
+            else: return "😴 Слабкий день"
+
+        form1 = round(random.uniform(0.8, 1.2), 2)
+        form2 = round(random.uniform(0.8, 1.2), 2)
+        eff_per1 = per1 * form1
+        eff_per2 = per2 * form2
+
         log = []
         score1, score2 = 0, 0
         minutes = sorted(random.sample(range(1, 91), random.randint(6, 10)))
@@ -4087,7 +4313,7 @@ def render_simulator(df):
         }
 
         for minute in minutes:
-            weight1 = per1/(per1+per2)
+            weight1 = eff_per1/(eff_per1+eff_per2) if (eff_per1+eff_per2) > 0 else 0.5
             active = p1 if random.random() < weight1 else p2
             active_data = p1_data if active == p1 else p2_data
 
@@ -4113,7 +4339,7 @@ def render_simulator(df):
             log.append({"хв": minute, "icon": icon, "подія": event_text, "рахунок": f"{score1}:{score2}"})
 
         if score1 == score2:
-            winner = p1 if per1*random.uniform(0.9,1.1) > per2*random.uniform(0.9,1.1) else p2
+            winner = p1 if eff_per1 > eff_per2 else p2
             winner_pen = True
         else:
             winner = p1 if score1 > score2 else p2
@@ -4133,6 +4359,19 @@ def render_simulator(df):
         else:
             st.balloons()
             st.success(f"🏆 **{winner}** перемагає ({score1}:{score2}) — результат збережено в БД!")
+
+        st.divider()
+        st.subheader("🎭 Ігрова форма дня")
+        st.caption(
+            "Випадковий коефіцієнт (0.8–1.2), що симулює те, що гравець може бути «не в дусі» "
+            "в конкретний день — впливає на ефективний PER саме в цьому матчі (базовий PER у базі не змінюється)."
+        )
+        fc1, fc2 = st.columns(2)
+        fc1.metric(f"🔴 {p1}", f"{form1*100:.0f}%", describe_form(form1))
+        fc2.metric(f"🔵 {p2}", f"{form2*100:.0f}%", describe_form(form2))
+        if abs(form1 - form2) >= 0.2:
+            lucky = p1 if form1 > form2 else p2
+            st.info(f"🎲 Форма дня суттєво вплинула на результат — **{lucky}** пощастило з формою сьогодні.")
 
         st.divider()
         st.subheader("📊 Статистика матчу")
@@ -4156,12 +4395,34 @@ def render_simulator(df):
         st.info("Попередній матч збережено. Натисніть кнопку вище для нового.")
 
     st.divider()
+    st.subheader("🏆 Турнірна таблиця")
+    st.caption(
+        "Зведена статистика по всіх зіграних симуляціях у базі даних — перемога дає 3 очки, "
+        "поразка — 0. Гравці ранжуються за очками, різницею голів і кількістю забитих."
+    )
+    all_history = db_load_all_match_history()
+    standings_df = build_tournament_standings(all_history)
+    if standings_df.empty:
+        st.info("Ще не зіграно жодного матчу — зіграйте перший вище, щоб побачити турнірну таблицю.")
+    else:
+        display_standings = standings_df.reset_index().rename(columns={"index": "Місце"})
+        medal_map = {1: "🥇", 2: "🥈", 3: "🥉"}
+        display_standings["Місце"] = display_standings["Місце"].apply(lambda i: f"{medal_map.get(i, '')} {i}".strip())
+        st.dataframe(
+            display_standings.style.background_gradient(cmap='Greens', subset=['Очки']),
+            use_container_width=True, hide_index=True
+        )
+
+    st.divider()
     sim_history_df = pd.DataFrame(db_load_match_history())
     if not sim_history_df.empty:
         sim_history_df = sim_history_df.drop(columns=["log_json"], errors="ignore")
     render_export_import_block(
         section_key="simulator",
-        export_data={"Історія симуляцій": sim_history_df},
+        export_data={
+            "Історія симуляцій": sim_history_df,
+            "Турнірна таблиця": standings_df.reset_index().rename(columns={"index": "Місце"})
+        },
         import_config={
             "columns_hint": "player1, player2, score1, score2, winner",
             "label": "матчі",
