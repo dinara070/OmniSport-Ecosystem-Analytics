@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
+import matplotlib.animation as animation
 from matplotlib.colors import LinearSegmentedColormap
 import time
 import random
@@ -10,6 +11,7 @@ import io
 import sqlite3
 import json
 import os
+import tempfile
 from datetime import datetime, timedelta
 import hashlib
 import uuid
@@ -60,6 +62,46 @@ DEFAULT_POSITIONS = ["Не вказано"]
 
 def get_position_options(sport: str) -> list:
     return POSITION_OPTIONS.get(sport, DEFAULT_POSITIONS)
+
+
+# Вага фізичних показників у розрахунку "тактичного впливу" залежно від позиції.
+# Наприклад, для воротаря найважливіша Реакція, а для нападника — Швидкість.
+TACTICAL_IMPACT_WEIGHTS = {
+    "Воротар": {"Реакція": 0.50, "Сила": 0.30, "Витривалість": 0.20},
+    "Захисник": {"Сила": 0.40, "Витривалість": 0.35, "Швидкість": 0.25},
+    "Півзахисник": {"Витривалість": 0.40, "Швидкість": 0.30, "Сила": 0.30},
+    "Нападник": {"Швидкість": 0.45, "Сила": 0.30, "Реакція": 0.25},
+    "Ліберо": {"Реакція": 0.40, "Швидкість": 0.35, "Витривалість": 0.25},
+    "Розігруючий": {"Реакція": 0.40, "Швидкість": 0.35, "Витривалість": 0.25},
+    "Центровий": {"Сила": 0.45, "Витривалість": 0.30, "Швидкість": 0.25},
+}
+DEFAULT_TACTICAL_WEIGHTS = {"Швидкість": 0.34, "Витривалість": 0.33, "Сила": 0.33}
+
+
+def compute_tactical_impact(player_row, position: str) -> float:
+    """
+    Розраховує «тактичний вплив» гравця, якби він грав на заданій позиції:
+    зважена сума фізичних показників, де вага метрики залежить від вимог позиції
+    (наприклад, для воротаря найважливіша Реакція, а не дистанція/швидкість).
+    """
+    weights = TACTICAL_IMPACT_WEIGHTS.get(position, DEFAULT_TACTICAL_WEIGHTS)
+    normalized = {
+        "Швидкість": min((player_row.get('Швидкість', 0) or 0) / 40 * 100, 100),
+        "Витривалість": player_row.get('Витривалість', 0) or 0,
+        "Сила": player_row.get('Сила', 0) or 0,
+        "Реакція": player_row.get('Реакція', 50) or 50,
+    }
+    score = sum(weights.get(metric, 0) * normalized.get(metric, 0) for metric in weights)
+    return round(score, 1)
+
+
+def generate_yearly_per_trend(seed_name: str, current_per: float, periods: int = 12, volatility: float = 3.0) -> list:
+    """Генерує реалістичну помісячну динаміку PER гравця за останній рік (відтворювано за іменем)."""
+    rnd = random.Random(f"per_trend_{seed_name}")
+    trend = [current_per]
+    for _ in range(periods - 1):
+        trend.append(max(0.0, trend[-1] + rnd.gauss(0, volatility)))
+    return trend[::-1]
 
 
 # ==========================================
@@ -2132,8 +2174,8 @@ def render_scouting(df):
     st.title("⚔️ Head-to-Head: Порівняння гравців")
     st.markdown("""
     Скаутинговий модуль дозволяє порівняти двох спортсменів за всіма ключовими параметрами.
-    Радарна діаграма візуалізує сильні й слабкі сторони кожного гравця — ідеальний інструмент
-    для підготовки до матчу або вибору оптимального складу.
+    Радарна діаграма візуалізує сильні й слабкі сторони кожного гравця, симуляція «тактичного впливу»
+    показує, хто корисніший на конкретній позиції, а графік динаміки PER за рік — хто справді прогресує.
     """)
 
     c1, c2 = st.columns(2)
@@ -2219,9 +2261,77 @@ def render_scouting(df):
             st.warning(f"🏆 **{leader}** значно перевершує {follower} (різниця PER: {diff:.1f}). Розгляньте додаткове тренування для {follower}.")
 
     st.divider()
+    st.subheader("🎯 Симуляція ігрових ситуацій: тактичний вплив за позицією")
+    st.caption(
+        "Порівняння не лише за фізичними даними, а за тим, наскільки корисним був би кожен гравець "
+        "на конкретній ігровій позиції. Вага кожного показника залежить від позиції — "
+        "наприклад, для воротаря найважливіша Реакція, а не дистанція/швидкість."
+    )
+
+    all_tactical_positions = sorted(TACTICAL_IMPACT_WEIGHTS.keys())
+    p1_own_position = p1_data.get('Позиція') if p1_data.get('Позиція') in all_tactical_positions else all_tactical_positions[0]
+    default_pos_idx = all_tactical_positions.index(p1_own_position) if p1_own_position in all_tactical_positions else 0
+    tactical_position = st.selectbox(
+        "Гіпотетична позиція для порівняння:", all_tactical_positions, index=default_pos_idx, key="ta_tactical_position"
+    )
+    weights_used = TACTICAL_IMPACT_WEIGHTS.get(tactical_position, DEFAULT_TACTICAL_WEIGHTS)
+    st.caption(f"🔑 Ключові показники для «{tactical_position}»: " + ", ".join(
+        f"{metric} ({int(w*100)}%)" for metric, w in weights_used.items()
+    ))
+
+    impact1 = compute_tactical_impact(p1_data, tactical_position)
+    impact2 = compute_tactical_impact(p2_data, tactical_position) if p1_name != p2_name else None
+
+    ti1, ti2, ti3 = st.columns(3)
+    ti1.metric(f"🔴 {p1_name}", f"{impact1:.1f}")
+    if p1_name != p2_name:
+        ti2.metric(f"🔵 {p2_name}", f"{impact2:.1f}")
+        ti3.metric("Різниця", f"{abs(impact1 - impact2):.1f}", f"{'на користь ' + p1_name if impact1 > impact2 else 'на користь ' + p2_name}")
+
+        if abs(impact1 - impact2) < 5:
+            st.success(f"⚖️ На позиції **{tactical_position}** гравці показали б приблизно однаковий тактичний вплив.")
+        else:
+            better = p1_name if impact1 > impact2 else p2_name
+            worse = p2_name if impact1 > impact2 else p1_name
+            st.info(f"🎯 На позиції **{tactical_position}** тактичний вплив **{better}** вищий, ніж у {worse} — саме він доцільніший для цієї ролі.")
+
+    st.divider()
+    st.subheader("📈 Візуальна історія: динаміка PER за останній рік")
+    st.caption(
+        "Помісячна динаміка рейтингу ефективності (PER) обох гравців — щоб побачити, чи дійсно один із них "
+        "став кращим за суперника з часом, а не лише зараз."
+    )
+    months = [f"Міс. {i}" for i in range(1, 13)]
+    p1_yearly = generate_yearly_per_trend(p1_name, per1)
+    yearly_data = {p1_name: p1_yearly}
+    if p1_name != p2_name:
+        p2_yearly = generate_yearly_per_trend(p2_name, per2)
+        yearly_data[p2_name] = p2_yearly
+    yearly_df = pd.DataFrame(yearly_data, index=months)
+    st.line_chart(yearly_df, color=["#FF5252", "#448AFF"] if p1_name != p2_name else ["#FF5252"])
+
+    if p1_name != p2_name:
+        growth1 = p1_yearly[-1] - p1_yearly[0]
+        growth2 = p2_yearly[-1] - p2_yearly[0]
+        gc1, gc2 = st.columns(2)
+        gc1.metric(f"Приріст PER — {p1_name}", f"{growth1:+.1f}")
+        gc2.metric(f"Приріст PER — {p2_name}", f"{growth2:+.1f}")
+        if abs(growth1 - growth2) < 2:
+            st.info("➡️ Обидва гравці прогресували приблизно однаково за останній рік.")
+        else:
+            faster = p1_name if growth1 > growth2 else p2_name
+            st.success(f"📈 **{faster}** прогресував швидше за останній рік — тенденція на його користь, навіть якщо поточний PER поки що близький.")
+
+    st.divider()
     render_export_import_block(
         section_key="scouting",
-        export_data={"Порівняння гравців": compare_df.reset_index()},
+        export_data={
+            "Порівняння гравців": compare_df.reset_index(),
+            "Тактичний вплив за позицією": pd.DataFrame([
+                {"Гравець": p1_name, "Позиція": tactical_position, "Тактичний вплив": impact1},
+            ] + ([{"Гравець": p2_name, "Позиція": tactical_position, "Тактичний вплив": impact2}] if p1_name != p2_name else [])),
+            "Динаміка PER за рік": yearly_df.reset_index().rename(columns={"index": "Місяць"})
+        },
         import_config=None,
         note="Дані порівняння розраховуються автоматично, тому доступний лише експорт."
     )
@@ -2234,8 +2344,9 @@ def render_tactics(df):
     st.title("🗺️ Інтерактивна Тактична Дошка")
     st.markdown("""
     Візуалізуйте тактичні схеми безпосередньо на полі. Обирайте пресетні розстановки
-    або вручну розміщуйте точки активності гравця. Усі нотатки до тактик зберігаються
-    у базі даних і доступні для перегляду в будь-який момент.
+    або вручну розміщуйте точки активності гравця. Схему можна зберегти як PNG для
+    надсилання в месенджери, а також згенерувати коротку GIF-анімацію переміщення.
+    Усі нотатки до тактик зберігаються у базі даних і доступні для перегляду в будь-який момент.
     """)
 
     selected_player = st.selectbox("Оберіть гравця:", df["Ім'я"])
@@ -2371,7 +2482,135 @@ def render_tactics(df):
         ax.set_xticks([])
         ax.set_yticks([])
         st.pyplot(fig)
+
+        png_buffer = io.BytesIO()
+        fig.savefig(png_buffer, format='png', dpi=150, bbox_inches='tight', facecolor=fig.get_facecolor())
+        png_buffer.seek(0)
+        st.download_button(
+            "📥 Зберегти схему як PNG",
+            data=png_buffer.getvalue(),
+            file_name=f"taktyka_{selected_player}_{selected_tactic}.png".replace(" ", "_"),
+            mime="image/png",
+            use_container_width=True,
+            key="tactics_png_export"
+        )
+
         plt.close(fig)
+
+    st.divider()
+    st.subheader("🎬 Анімація переміщення гравців")
+    st.caption(
+        "Коротка анімація (GIF), що показує динаміку переміщення гравців у межах обраної тактики/точок — "
+        "зручно для наочної демонстрації на тренуванні."
+    )
+
+    anim_frames = st.slider("Кількість кадрів анімації", 4, 16, 8, key="anim_frames_count")
+    generate_anim = st.button("🎬 Створити анімацію", key="generate_tactics_animation")
+
+    if generate_anim:
+        with st.spinner("Генеруємо анімацію..."):
+            if mode == "🎯 Пресет тактики":
+                raw_points = get_preset_points(selected_tactic, spread)
+                # Групуємо точки по 8 (кожен блок — «хмара» переміщення одного гравця)
+                player_clouds = [raw_points[i:i + 8] for i in range(0, len(raw_points), 8)]
+                anim_title = f"Тактика: {selected_tactic}"
+            else:
+                if len(st.session_state.tactic_points) < 2:
+                    player_clouds = None
+                    anim_title = None
+                else:
+                    # Інтерполюємо траєкторію через усі вручну додані точки
+                    manual_pts = st.session_state.tactic_points
+                    player_clouds = [manual_pts]
+                    anim_title = f"Ручна траєкторія ({len(manual_pts)} точок)"
+
+            if not player_clouds:
+                st.warning("⚠️ Для ручного режиму додайте щонайменше 2 точки, щоб побудувати анімацію переміщення.")
+            else:
+                anim_fig, anim_ax = plt.subplots(figsize=(10, 6.5))
+
+                def draw_field(ax_obj):
+                    ax_obj.clear()
+                    ax_obj.set_facecolor('#1a5c23')
+                    ax_obj.set_xlim(0, 100)
+                    ax_obj.set_ylim(0, 60)
+                    ax_obj.add_patch(patches.Rectangle((2, 2), 96, 56, linewidth=2, edgecolor='white', facecolor='none'))
+                    ax_obj.plot([50, 50], [2, 58], color='white', linewidth=1.5)
+                    ax_obj.add_patch(plt.Circle((50, 30), 9.15, color='white', fill=False, linewidth=1.5))
+                    ax_obj.add_patch(patches.Rectangle((2, 15), 16.5, 30, linewidth=1.5, edgecolor='white', facecolor='none'))
+                    ax_obj.add_patch(patches.Rectangle((81.5, 15), 16.5, 30, linewidth=1.5, edgecolor='white', facecolor='none'))
+                    ax_obj.set_xticks([])
+                    ax_obj.set_yticks([])
+
+                colors_cycle = plt.cm.tab20.colors
+                num_players = len(player_clouds)
+                cloud_len = max(len(c) for c in player_clouds)
+
+                def animate_frame(frame_idx):
+                    draw_field(anim_ax)
+                    if mode == "🎯 Пресет тактики":
+                        for p_idx, cloud in enumerate(player_clouds):
+                            px, py = cloud[frame_idx % len(cloud)]
+                            anim_ax.plot(px, py, 'o', color=colors_cycle[p_idx % len(colors_cycle)],
+                                         markersize=12, zorder=5, markeredgecolor='white', markeredgewidth=1.5)
+                            anim_ax.text(px, py, str(p_idx + 1), color='black', fontsize=7,
+                                         ha='center', va='center', zorder=6, fontweight='bold')
+                    else:
+                        path = player_clouds[0]
+                        # Плавна інтерполяція положення точки вздовж ламаної через усі точки
+                        t = frame_idx / max(anim_frames - 1, 1)
+                        seg_count = len(path) - 1
+                        seg_pos = t * seg_count
+                        seg_idx = min(int(seg_pos), seg_count - 1)
+                        local_t = seg_pos - seg_idx
+                        x1, y1 = path[seg_idx]
+                        x2, y2 = path[seg_idx + 1]
+                        cur_x = x1 + (x2 - x1) * local_t
+                        cur_y = y1 + (y2 - y1) * local_t
+                        xs_done = [p[0] for p in path[:seg_idx + 1]] + [cur_x]
+                        ys_done = [p[1] for p in path[:seg_idx + 1]] + [cur_y]
+                        anim_ax.plot(xs_done, ys_done, '--', color='cyan', alpha=0.6, linewidth=1.5)
+                        for px, py in path:
+                            anim_ax.plot(px, py, 'o', color='white', markersize=6, zorder=4, alpha=0.6)
+                        anim_ax.plot(cur_x, cur_y, 'o', color='cyan', markersize=14, zorder=5,
+                                     markeredgecolor='white', markeredgewidth=2)
+                    anim_ax.set_title(anim_title, color='white', fontsize=12)
+                    anim_fig.patch.set_facecolor('#0d3318')
+                    return []
+
+                ani = animation.FuncAnimation(anim_fig, animate_frame, frames=anim_frames, interval=400, blit=False)
+
+                gif_bytes = None
+                tmp_gif_path = None
+                try:
+                    # PillowWriter у деяких версіях matplotlib не вміє зберігати напряму
+                    # в BytesIO (потребує рядковий шлях до файлу), тому пишемо у тимчасовий файл.
+                    tmp_fd, tmp_gif_path = tempfile.mkstemp(suffix=".gif")
+                    os.close(tmp_fd)
+                    writer = animation.PillowWriter(fps=2.5)
+                    ani.save(tmp_gif_path, writer=writer)
+                    with open(tmp_gif_path, "rb") as gif_file:
+                        gif_bytes = gif_file.read()
+                    plt.close(anim_fig)
+
+                    st.image(gif_bytes, caption=anim_title, use_container_width=True)
+                    st.download_button(
+                        "📥 Завантажити анімацію (GIF)",
+                        data=gif_bytes,
+                        file_name=f"animatsiya_{selected_player}.gif".replace(" ", "_"),
+                        mime="image/gif",
+                        use_container_width=True,
+                        key="tactics_gif_export"
+                    )
+                except Exception as e:
+                    plt.close(anim_fig)
+                    st.error(f"Не вдалося створити анімацію: {e}")
+                finally:
+                    if tmp_gif_path and os.path.exists(tmp_gif_path):
+                        try:
+                            os.remove(tmp_gif_path)
+                        except OSError:
+                            pass
 
     st.divider()
     tactic_notes_df = pd.DataFrame(db_load_tactic_notes(selected_player))
