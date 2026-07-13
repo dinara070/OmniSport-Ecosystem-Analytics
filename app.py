@@ -2889,26 +2889,25 @@ def render_media_integration():
 
     st.divider()
     video_notes_df = pd.DataFrame(db_load_video_notes())
+    timecoded_notes_df = pd.DataFrame(db_load_timecoded_notes())
+
+    def import_media_notes(imp_df):
+        if "timecode_seconds" in imp_df.columns:
+            return db_import_timecoded_notes(imp_df)
+        return db_import_video_notes(imp_df)
+
     render_export_import_block(
         section_key="media",
-        export_data={"Відеонотатки": video_notes_df},
-        import_config={
-            "columns_hint": "url, notes",
-            "label": "відеонотатки",
-            "handler": db_import_video_notes
+        export_data={
+            "Відеонотатки": video_notes_df,
+            "Нотатки з таймкодом": timecoded_notes_df
         },
-        note="Імпорт додає нові відеонотатки до бази даних."
-    )
-    timecoded_notes_df = pd.DataFrame(db_load_timecoded_notes())
-    render_export_import_block(
-        section_key="media_timecodes",
-        export_data={"Нотатки з таймкодом": timecoded_notes_df},
         import_config={
-            "columns_hint": "video_url, timecode_seconds, note, tags",
-            "label": "нотатки з таймкодом",
-            "handler": db_import_timecoded_notes
+            "columns_hint": "url, notes  —  або  —  video_url, timecode_seconds, note, tags",
+            "label": "нотатки",
+            "handler": import_media_notes
         },
-        note="⏱️ Таймкод-нотатки — імпорт додає нові записи до бази даних."
+        note="Тип нотаток визначається автоматично за колонками CSV (звичайні або з таймкодом)."
     )
 
 
