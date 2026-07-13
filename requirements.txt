@@ -2,8 +2,13 @@ streamlit
 pandas
 numpy
 matplotlib
-opencv-python-headless
-streamlit-echarts
 openpyxl
-xlrd
-pillow 
+streamlit-echarts
+Pillow
+
+# Опційні, важкі залежності — потрібні лише для реальної детекції об'єктів (YOLO)
+# у розділі "CV Аналіз відео". Без них застосунок працює повністю нормально,
+# просто ця конкретна функція покаже попередження й запропонує демо-симуляцію.
+# Розкоментуйте, якщо хочете реальну детекцію (модель ~6 МБ завантажиться сама при першому запуску):
+# opencv-python-headless
+# ultralytics
