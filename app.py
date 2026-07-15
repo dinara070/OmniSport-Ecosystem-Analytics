@@ -5005,6 +5005,440 @@ def render_io(df):
         note="🗒️ Нотатки гравців"
     )
 
+# ==========================================
+# КАБІНЕТ БАТЬКІВ
+# ==========================================
+def render_parent_cabinet(token):
+    conn = get_connection()
+    student = conn.execute("""
+        SELECT name, sport, age, points, workload, speed, stamina, power, coach, discipline, teamwork, diligence 
+        FROM athletes WHERE parent_token = ?
+    """, (token,)).fetchone()
+    notes = conn.execute("""
+        SELECT note, created_at FROM athlete_notes 
+        WHERE athlete = (SELECT name FROM athletes WHERE parent_token = ?)
+        ORDER BY created_at DESC LIMIT 5
+    """, (token,)).fetchall()
+    conn.close()
+    if not student:
+        st.error("❌ Посилання недійсне або застаріло. Зверніться до тренера.")
+        return
+    st.title(f"🎓 Кабінет спортсмена: {student['name']}")
+    st.caption(f"Група: {student['coach']} | Вид спорту: {student['sport']}")
+    st.divider()
+    st.subheader("📊 Поточна форма та успішність")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Очки/Бали", student['points'])
+    c2.metric("Витривалість", student['stamina'])
+    c3.metric("Швидкість", f"{student['speed']} км/год")
+    workload = student['workload']
+    status = "🟢 Оптимально" if workload < 3 else "🔴 Перевтома"
+    c4.metric("Статус здоров'я", status)
+    st.divider()
+    st.subheader("🌟 Оцінка прогресу (Soft Skills)")
+    st.caption("Показники поведінки та роботи в команді (від 0 до 100)")
+    st.progress(student['discipline']/100, text=f"Дисципліна: {student['discipline']}")
+    st.progress(student['teamwork']/100, text=f"Командна робота: {student['teamwork']}")
+    st.progress(student['diligence']/100, text=f"Старанність (Самосадача): {student['diligence']}")
+    st.divider()
+    st.subheader("💬 Коментарі тренера")
+    if notes:
+        for n in notes:
+            st.info(f"**{n['created_at'][:10]}**: {n['note']}")
+    else:
+        st.write("Поки немає нотаток від тренера.")
+
+
+# ═══════════════════════════════════════════════════════════════
+# AUTH / LOGIN MODULE
+# ═══════════════════════════════════════════════════════════════
+def render_login():
+    """Сторінка входу з вибором ролі.""" 
+    st.title("🔐 OmniSport Pro — Вхід")
+    st.markdown("Виберіть користувача для входу в систему. У продакшені тут буде повноцінна аутентифікація.")
+    
+    with st.form("login_form"):
+        username = st.text_input("Логін", value="admin")
+        password = st.text_input("Пароль", value="admin123", type="password")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.caption("Демо-аккаунти:")
+            st.caption("• admin / admin123 (Адмін)")
+            st.caption("• coach1 / coach123 (Тренер)")
+            st.caption("• doctor1 / doc123 (Лікар)")
+        submitted = st.form_submit_button("🔓 Увійти", type="primary", use_container_width=True)
+        if submitted:
+            user = db_authenticate_user(username, password)
+            if user:
+                st.session_state.user_info = {
+                    "username": user['username'],
+                    "role": user['role'],
+                    "coach_group": user['coach_group'],
+                    "full_name": user.get('full_name', user['username']),
+                    "telegram_chat_id": user.get('telegram_chat_id')
+                }
+                db_log_audit(user['username'], user['role'], "LOGIN", "users", 
+                           athlete_name=None, ip_address="127.0.0.1")
+                st.success(f"✅ Вітаємо, {user.get('full_name', user['username'])}! Роль: {user['role']}")
+                st.rerun()
+            else:
+                st.error("❌ Невірний логін або пароль.")
+
+def render_user_management():
+    """Управління користувачами (тільки для admin)."""
+    st.title("👤 Управління користувачами")
+    st.markdown("Створення, редагування та видалення користувачів системи.")
+    
+    users_df = db_load_users()
+    st.subheader("📋 Список користувачів")
+    st.dataframe(users_df, use_container_width=True, hide_index=True)
+    
+    with st.expander("➕ Додати нового користувача", expanded=False):
+        with st.form("add_user_form"):
+            col1, col2 = st.columns(2)
+            new_username = col1.text_input("Логін *")
+            new_password = col2.text_input("Пароль *", type="password")
+            new_role = st.selectbox("Роль", ["admin", "coach", "doctor", "parent"])
+            new_group = st.text_input("Група тренера", value="Тренер 1")
+            new_fullname = st.text_input("Повне ім'я")
+            new_telegram = st.text_input("Telegram Chat ID (опціонально)")
+            if st.form_submit_button("💾 Створити користувача", type="primary"):
+                if new_username and new_password:
+                    try:
+                        db_add_user(new_username, new_password, new_role, new_group, new_fullname, new_telegram or None)
+                        user_info = st.session_state.get('user_info', {})
+                        db_log_audit(user_info.get('username'), user_info.get('role'), "CREATE_USER", "users",
+                                   athlete_name=new_username)
+                        st.success(f"✅ Користувач {new_username} створений!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Помилка: {e}")
+                else:
+                    st.error("Введіть логін та пароль")
+    
+    st.divider()
+    st.subheader("🗑️ Видалення користувача")
+    if not users_df.empty:
+        del_user = st.selectbox("Користувач для видалення:", 
+                               users_df[users_df['username'] != 'admin']['username'].tolist(),
+                               key="del_user_select")
+        if st.button("🗑️ Видалити", type="secondary"):
+            user_id = users_df[users_df['username'] == del_user]['id'].iloc[0]
+            db_delete_user(int(user_id))
+            user_info = st.session_state.get('user_info', {})
+            db_log_audit(user_info.get('username'), user_info.get('role'), "DELETE_USER", "users",
+                       athlete_name=del_user)
+            st.success(f"✅ Користувач {del_user} видалений!")
+            st.rerun()
+
+
+# ═══════════════════════════════════════════════════════════════
+# КОМУНІКАЦІЙНИЙ МОДУЛЬ (Telegram Bot)
+# ═══════════════════════════════════════════════════════════════
+def render_communication_module(df):
+    """Модуль керування сповіщеннями та Telegram-ботом."""
+    st.title("🔔 Комунікаційний модуль")
+    st.markdown("""
+    Центр управління сповіщеннями. Система автоматично формує повідомлення 
+    на основі подій (високий ризик травми, спливаючі довідки, дні народження) 
+    та надсилає їх через Telegram Bot API.
+    """)
+    
+    # Налаштування сповіщень
+    st.subheader("⚙️ Налаштування сповіщень")
+    settings = db_get_notification_settings()
+    for setting in settings:
+        with st.container(border=True):
+            col1, col2, col3 = st.columns([2, 2, 1])
+            with col1:
+                st.write(f"**{setting['event_type']}**")
+                st.caption(f"Шаблон: {setting['template'][:60]}...")
+            with col2:
+                st.caption(f"Ролі: {setting['notify_roles']}")
+            with col3:
+                new_enabled = st.toggle("Увімкнено", value=bool(setting['enabled']), 
+                                       key=f"notif_{setting['id']}")
+                if new_enabled != bool(setting['enabled']):
+                    db_update_notification_setting(setting['id'], new_enabled)
+                    st.rerun()
+    
+    # Ручне відправлення повідомлення
+    st.divider()
+    st.subheader("✉️ Ручне повідомлення")
+    with st.form("manual_message"):
+        msg_recipient = st.selectbox("Отримувач", ["Тренеру", "Лікарю", "Усім", "Батькам"])
+        msg_text = st.text_area("Текст повідомлення", height=100,
+                               placeholder="Наприклад: Тренування перенесено на 18:00...")
+        if st.form_submit_button("📤 Надіслати", type="primary"):
+            if msg_text.strip():
+                recipient_map = {"Тренеру": "coach", "Лікарю": "doctor", "Усім": "all", "Батькам": "parent"}
+                db_queue_message("manual", recipient_map.get(msg_recipient, "all"), msg_text.strip())
+                # Спроба миттєвої відправки
+                success = send_telegram_message(msg_text.strip())
+                status = "✅ Надіслано" if success else "⏳ Додано в чергу (бот не налаштований)"
+                st.success(f"{status}: {msg_text[:50]}...")
+                user_info = st.session_state.get('user_info', {})
+                db_log_audit(user_info.get('username'), user_info.get('role'), "SEND_NOTIFICATION", 
+                           "bot_message_queue", athlete_name=msg_recipient)
+            else:
+                st.error("Введіть текст повідомлення")
+    
+    # Черга повідомлень
+    st.divider()
+    st.subheader("📨 Черга повідомлень")
+    queue_df = db_load_message_queue(limit=30)
+    if not queue_df.empty:
+        status_filter = st.selectbox("Фільтр статусу:", ["Всі", "pending", "sent", "error"], key="queue_filter")
+        if status_filter != "Всі":
+            queue_df = queue_df[queue_df['status'] == status_filter]
+        st.dataframe(queue_df[['created_at', 'recipient', 'recipient_type', 'message', 'status']], 
+                    use_container_width=True, hide_index=True)
+    else:
+        st.info("Черга повідомлень порожня.")
+    
+    # Тест Telegram
+    st.divider()
+    st.subheader("🧪 Тест підключення Telegram")
+    if not TELEGRAM_BOT_TOKEN:
+        st.warning("⚠️ Змінна оточення OMNISPORT_BOT_TOKEN не встановлена. Додайте токен бота для роботи сповіщень.")
+    else:
+        st.success(f"✅ Токен бота налаштовано: ...{TELEGRAM_BOT_TOKEN[-6:]}")
+    if st.button("🔄 Перевірити з'єднання"):
+        test_msg = "🧪 Тестове повідомлення від OmniSport Pro"
+        success = send_telegram_message(test_msg)
+        if success:
+            st.success("✅ З'єднання з Telegram встановлено успішно!")
+        else:
+            st.error("❌ Не вдалося надіслати тестове повідомлення. Перевірте TELEGRAM_CHAT_ID.")
+
+
+# ═══════════════════════════════════════════════════════════════
+# АУДИТ ЛОГІВ
+# ═══════════════════════════════════════════════════════════════
+def render_audit_logs():
+    """Розділ перегляду аудит-логів (тільки для admin)."""
+    st.title("📋 Аудит логів")
+    st.markdown("""
+    Журнал всіх змін в системі. Відстежується: хто і коли змінив показники гравця, 
+    створив/видалив запис, надіслав сповіщення тощо.
+    """)
+    
+    # Статистика
+    stats = db_load_audit_stats()
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Всього записів", stats['total'])
+    col2.metric("Сьогодні", stats['today'])
+    with col3:
+        st.caption("Топ користувачів:")
+        for u in stats['top_users'][:3]:
+            st.caption(f"• {u['username']}: {u['cnt']}")
+    with col4:
+        st.caption("Топ таблиць:")
+        for t in stats['top_tables'][:3]:
+            st.caption(f"• {t['table_name']}: {t['cnt']}")
+    
+    # Фільтри
+    st.divider()
+    st.subheader("🔍 Фільтрація")
+    col_f1, col_f2, col_f3, col_f4 = st.columns(4)
+    with col_f1:
+        filter_user = st.text_input("Користувач", placeholder="admin", key="audit_user")
+    with col_f2:
+        filter_table = st.selectbox("Таблиця", ["Всі", "athletes", "match_logs", "tactic_notes", 
+                                               "bot_message_queue", "users"], key="audit_table")
+    with col_f3:
+        filter_from = st.date_input("Від", value=None, key="audit_from")
+    with col_f4:
+        filter_to = st.date_input("До", value=None, key="audit_to")
+    
+    # Завантаження логів
+    logs_df = db_load_audit_logs(
+        limit=200,
+        username=filter_user if filter_user else None,
+        table_name=filter_table if filter_table != "Всі" else None,
+        date_from=filter_from.strftime("%Y-%m-%d") if filter_from else None,
+        date_to=filter_to.strftime("%Y-%m-%d") if filter_to else None
+    )
+    
+    if not logs_df.empty:
+        st.subheader(f"📄 Знайдено записів: {len(logs_df)}")
+        display_df = logs_df.copy()
+        display_df['created_at'] = display_df['created_at'].str[:19]
+        st.dataframe(display_df[['created_at', 'username', 'role', 'action', 'table_name', 
+                                'athlete_name', 'old_value', 'new_value']], 
+                    use_container_width=True, hide_index=True)
+        
+        # Експорт
+        st.download_button("📥 Експорт CSV", logs_df.to_csv(index=False).encode('utf-8'),
+                          "audit_logs.csv", mime="text/csv", use_container_width=True)
+    else:
+        st.info("Записів не знайдено за вказаними фільтрами.")
+
+
+# ==========================================
+# ГОЛОВНА ЛОГІКА
+# ==========================================
+def main():
+    # Кабінет батьків через токен
+    if "token" in st.query_params:
+        render_parent_cabinet(st.query_params["token"])
+        return
+    
+    # Ініціалізація сесії користувача
+    if 'user_info' not in st.session_state:
+        st.session_state.user_info = None
+    
+    # Якщо не авторизований — показуємо логін
+    if st.session_state.user_info is None:
+        render_login()
+        return
+    
+    df = load_athletes_with_per()
+    user_info = st.session_state.user_info
+    
+    # Фільтрація за групою тренера (для coach)
+    if user_info['role'] == 'coach':
+        if 'Тренер' in df.columns:
+            df = df[df['Тренер'] == user_info['coach_group']]
+    
+    # Автоматична перевірка сповіщень
+    if user_info['role'] in ['admin', 'coach', 'doctor']:
+        check_and_send_notifications(df)
+        process_notification_queue()
+    
+    with st.sidebar:
+        st.title("🏆 OmniSport Pro")
+        st.caption("Performance Analytics v13.0 — SQLite + RBAC Edition")
+        
+        # Інформація про користувача
+        st.divider()
+        st.subheader("👤 Поточний користувач")
+        st.info(f"**{user_info.get('full_name', user_info['username'])}**\\n\\nРоль: `{user_info['role']}`")
+        if st.button("🚪 Вийти", use_container_width=True, type="secondary"):
+            db_log_audit(user_info['username'], user_info['role'], "LOGOUT", "users")
+            st.session_state.user_info = None
+            st.rerun()
+        
+        st.divider()
+        
+        # GDPR
+        st.subheader("🛡️ Безпека даних")
+        gdpr_mode = st.toggle("🔒 Анонімний режим (GDPR)", value=False, 
+                             help="Приховати справжні імена дітей у звітах для захисту персональних даних.")
+        if gdpr_mode:
+            df = anonymize_data(df)
+            st.warning("⚠️ Увімкнено режим конфіденційності. Імена приховані.")
+        
+        st.divider()
+        
+        # Статус БД
+        conn = get_connection()
+        db_size = os.path.getsize(DB_PATH) / 1024 if os.path.exists(DB_PATH) else 0
+        athlete_count = conn.execute("SELECT COUNT(*) FROM athletes").fetchone()[0]
+        match_count = conn.execute("SELECT COUNT(*) FROM match_logs").fetchone()[0]
+        conn.close()
+        
+        with st.expander("🗄️ Статус бази даних", expanded=False):
+            st.success(f"✅ SQLite активна: `{DB_PATH}`")
+            col_d1, col_d2 = st.columns(2)
+            col_d1.metric("Гравців", athlete_count)
+            col_d2.metric("Матчів", match_count)
+            st.caption(f"Розмір БД: {db_size:.1f} KB")
+            st.caption(f"📁 Файл: `{os.path.abspath(DB_PATH)}`")
+        
+        st.divider()
+        
+        # Завантаження даних
+        with st.expander("📂 Завантажити свої дані", expanded=False):
+            uploaded_file = st.file_uploader(
+                "CSV або Excel з даними команди",
+                type=["csv", "xlsx", "xls"],
+                help="Файл повинен містити колонки: Ім'я, Вік, Вид спорту, Матчі, Очки, Швидкість, Витривалість, Сила"
+            )
+            if uploaded_file is not None:
+                try:
+                    if uploaded_file.name.endswith('.csv'):
+                        df_upload = pd.read_csv(uploaded_file)
+                    else:
+                        df_upload = pd.read_excel(uploaded_file)
+                    required_cols = ["Ім'я", "Вид спорту", "Матчі", "Очки", "Швидкість", "Витривалість", "Сила"]
+                    missing = [c for c in required_cols if c not in df_upload.columns]
+                    if missing:
+                        st.error(f"Відсутні колонки: {', '.join(missing)}")
+                    else:
+                        for col, default in [('Навантаження_7днів', 0), ('Вік', 20), ('Номер', 1)]:
+                            if col not in df_upload.columns:
+                                df_upload[col] = default
+                        db_bulk_insert_athletes(df_upload)
+                        db_log_audit(user_info['username'], user_info['role'], "BULK_IMPORT", "athletes",
+                                   athlete_name=f"{len(df_upload)} records")
+                        st.success(f"✅ Завантажено та збережено {len(df_upload)} гравців!")
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"Помилка читання файлу: {e}")
+            if st.button("🔄 Повернути демо-дані", use_container_width=True):
+                db_bulk_insert_athletes(DEFAULT_DATA)
+                db_log_audit(user_info['username'], user_info['role'], "RESET_DEMO", "athletes")
+                st.rerun()
+        
+        st.divider()
+        
+        # Меню з RBAC фільтрацією
+        full_menu = [
+            "🏠 Дашборд",
+            "📊 Командна аналітика",
+            "👥 База гравців",
+            "⚔️ H2H Батл (Скаутинг)",
+            "🗺️ Тактична дошка",
+            "📹 Інтеграція з медіа",
+            "🎥 CV Аналіз відео",
+            "🖼️ OCR Тактичних фото",
+            "⚛️ Лабораторія Фізики",
+            "🎲 AI-Симулятор Матчів",
+            "🩹 Прогноз Травматизму",
+            "🧬 AI-Тренер (Плани тренувань)",
+            "📈 Історія форми",
+            "🗃️ Історія матчів (БД)",
+            "📚 Ресурси та Освіта",
+            "💾 Експорт Даних",
+            "🔔 Комунікаційний модуль",
+            "📋 Аудит логів"
+        ]
+        menu = filter_menu_by_role(full_menu)
+        
+        # Управління користувачами (тільки admin)
+        if user_info['role'] == 'admin':
+            menu.append("👤 Управління користувачами")
+        
+        choice = st.radio("Навігація", menu, key="nav_choice")
+        st.divider()
+        
+        st.subheader("🔗 Корисні посилання")
+        st.info("[SportAnalytic](https://sportanalytic.com/)")
+        st.info("[Sport.ua](https://sport.ua/uk)")
+        st.divider()
+        st.info(f"Активних гравців (Ваша група): **{len(df)}**")
+    
+    # Роутинг
+    if choice == "🏠 Дашборд": render_dashboard(df)
+    elif choice == "📊 Командна аналітика": render_team_analytics(df)
+    elif choice == "👥 База гравців": render_crm(df)
+    elif choice == "⚔️ H2H Батл (Скаутинг)": render_scouting(df)
+    elif choice == "🗺️ Тактична дошка": render_tactics(df)
+    elif choice == "📹 Інтеграція з медіа": render_media_integration()
+    elif choice == "🎥 CV Аналіз відео": render_cv_analysis()
+    elif choice == "🖼️ OCR Тактичних фото": render_tactical_ocr(df)
+    elif choice == "⚛️ Лабораторія Фізики": render_physics(df)
+    elif choice == "🎲 AI-Симулятор Матчів": render_simulator(df)
+    elif choice == "🩹 Прогноз Травматизму": render_injury_prediction(df)
+    elif choice == "🧬 AI-Тренер (Плани тренувань)": render_ai_advisor(df)
+    elif choice == "📈 Історія форми": render_form_history(df)
+    elif choice == "🗃️ Історія матчів (БД)": render_match_history()
+    elif choice == "📚 Ресурси та Освіта": render_resources()
+    elif choice == "💾 Експорт Даних": render_io(df)
+    elif choice == "🔔 Комунікаційний модуль": render_communication_module(df)
+    elif choice == "📋 Аудит логів": render_audit_logs()
+    elif choice == "👤 Управління користувачами": render_user_management()
 
 if __name__ == "__main__":
     main()
