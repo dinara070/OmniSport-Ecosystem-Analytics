@@ -312,6 +312,32 @@ def init_db():
         )
     """)
 
+    # Аудит-лог: хто, коли і що саме змінив у профілі гравця
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts         TEXT DEFAULT CURRENT_TIMESTAMP,
+            username   TEXT,
+            role       TEXT,
+            athlete    TEXT,
+            field      TEXT,
+            old_value  TEXT,
+            new_value  TEXT
+        )
+    """)
+
+    # Журнал надісланих Telegram-сповіщень
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS notification_log (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            recipient  TEXT,
+            chat_id    TEXT,
+            message    TEXT,
+            status     TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     migrations = [
         "ALTER TABLE athletes ADD COLUMN coach TEXT DEFAULT 'Тренер 1'",
         "ALTER TABLE athletes ADD COLUMN parent_token TEXT",
@@ -324,7 +350,8 @@ def init_db():
         "ALTER TABLE athletes ADD COLUMN reaction INTEGER DEFAULT 50",
         "ALTER TABLE athletes ADD COLUMN blood_type TEXT",
         "ALTER TABLE athletes ADD COLUMN allergies TEXT",
-        "ALTER TABLE athletes ADD COLUMN contract_end TEXT"
+        "ALTER TABLE athletes ADD COLUMN contract_end TEXT",
+        "ALTER TABLE athletes ADD COLUMN telegram_chat_id TEXT"
     ]
 
     for mig in migrations:
@@ -433,7 +460,7 @@ def db_load_athletes() -> pd.DataFrame:
                birthday AS "День народження", medical_expiry AS "Мед.довідка до",
                position AS "Позиція", reaction AS "Реакція",
                blood_type AS "Група крові", allergies AS "Алергії",
-               contract_end AS "Контракт до"
+               contract_end AS "Контракт до", telegram_chat_id AS "Telegram Чат ID"
         FROM athletes ORDER BY id
     """, conn)
     conn.close()
@@ -514,6 +541,16 @@ def db_update_medical_profile(athlete_name: str, blood_type: str, allergies: str
         UPDATE athletes SET blood_type = ?, allergies = ?, updated_at = CURRENT_TIMESTAMP
         WHERE name = ?
     """, (blood_type, allergies, athlete_name))
+    conn.commit()
+    conn.close()
+
+
+def db_update_telegram_chat_id(athlete_name: str, chat_id: str):
+    conn = get_connection()
+    conn.execute("""
+        UPDATE athletes SET telegram_chat_id = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE name = ?
+    """, (chat_id, athlete_name))
     conn.commit()
     conn.close()
 
@@ -607,6 +644,116 @@ def db_delete_historical_stats(stat_id: int):
     conn.execute("DELETE FROM historical_team_stats WHERE id = ?", (stat_id,))
     conn.commit()
     conn.close()
+
+
+# ---------- АУДИТ-ЛОГ ----------
+
+def db_log_audit(athlete: str, field: str, old_value, new_value):
+    """Записує в аудит-лог хто (поточний користувач сесії), коли і яке поле гравця змінив."""
+    user_info = st.session_state.get('user_info', {})
+    conn = get_connection()
+    conn.execute("""
+        INSERT INTO audit_log (username, role, athlete, field, old_value, new_value)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (user_info.get('username', '—'), user_info.get('role', '—'), athlete, field, str(old_value), str(new_value)))
+    conn.commit()
+    conn.close()
+
+
+def db_load_audit_log(athlete: str = None, limit: int = 500) -> list:
+    conn = get_connection()
+    if athlete:
+        rows = conn.execute(
+            "SELECT * FROM audit_log WHERE athlete = ? ORDER BY ts DESC LIMIT ?", (athlete, limit)
+        ).fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM audit_log ORDER BY ts DESC LIMIT ?", (limit,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+# ---------- НАЛАШТУВАННЯ (settings key-value) ----------
+
+def get_setting(key: str, default: str = "") -> str:
+    conn = get_connection()
+    row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    conn.close()
+    return row['value'] if row and row['value'] is not None else default
+
+
+def set_setting(key: str, value: str):
+    conn = get_connection()
+    conn.execute("""
+        INSERT INTO settings (key, value) VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    """, (key, value))
+    conn.commit()
+    conn.close()
+
+
+# ---------- TELEGRAM / СПОВІЩЕННЯ ----------
+
+def send_telegram_message(chat_id: str, text: str) -> tuple:
+    """
+    Надсилає повідомлення через Telegram Bot API (метод sendMessage).
+    Токен бота береться з таблиці settings (розділ «📣 Сповіщення (Telegram)»).
+    Повертає (success: bool, info: str).
+    """
+    bot_token = get_setting("telegram_bot_token", "")
+    if not bot_token:
+        return False, "Токен бота не налаштований. Відкрийте розділ «📣 Сповіщення (Telegram)» і вкажіть токен."
+    if not chat_id:
+        return False, "Не вказано chat_id отримувача."
+    try:
+        import urllib.request
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        data = urllib.parse.urlencode({"chat_id": chat_id, "text": text}).encode("utf-8")
+        req = urllib.request.Request(url, data=data)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = resp.read().decode("utf-8")
+            result = json.loads(body)
+        if result.get("ok"):
+            return True, "Повідомлення надіслано успішно."
+        return False, f"Telegram API повернув помилку: {result.get('description', 'невідома помилка')}"
+    except Exception as e:
+        return False, f"Помилка з'єднання з Telegram: {e}"
+
+
+def db_save_notification(recipient: str, chat_id: str, message: str, status: str):
+    conn = get_connection()
+    conn.execute("""
+        INSERT INTO notification_log (recipient, chat_id, message, status) VALUES (?, ?, ?, ?)
+    """, (recipient, chat_id, message, status))
+    conn.commit()
+    conn.close()
+
+
+def db_load_notifications(limit: int = 50) -> list:
+    conn = get_connection()
+    rows = conn.execute("SELECT * FROM notification_log ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def compute_team_injury_risks(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Розраховує ризик травматизму для кожного гравця команди.
+    Використовується як у розділі «Прогноз Травматизму», так і в «Сповіщеннях» —
+    щоб надіслати тренеру список гравців у зоні ризику.
+    """
+    rows = []
+    for _, row in df.iterrows():
+        imb = abs(row['Сила'] - row['Витривалість'])
+        br = int((imb * 1.5) + (row['Швидкість'] * 0.5))
+        wf = 45 if row.get('Навантаження_7днів', 0) >= 3 else (20 if row.get('Навантаження_7днів', 0) == 2 else 0)
+        sp = 20 if row['Витривалість'] < 55 else 0
+        risk = min(br + wf + sp, 100)
+        status = "🟢 Норма" if risk < 40 else ("🟡 Ризик" if risk < 75 else "🔴 Критично")
+        rows.append({"Гравець": row["Ім'я"], "Вид спорту": row["Вид спорту"],
+                     "Ризик (%)": risk, "Статус": status})
+    if not rows:
+        return pd.DataFrame(columns=["Гравець", "Вид спорту", "Ризик (%)", "Статус"])
+    return pd.DataFrame(rows).sort_values("Ризик (%)", ascending=False)
 
 
 def db_save_attendance(date: str, coach_group: str, attendance_dict: dict):
@@ -1019,6 +1166,8 @@ if 'cv_events' not in st.session_state:
     st.session_state.cv_events = []
 if 'cv_fps' not in st.session_state:
     st.session_state.cv_fps = 25
+if 'cv_real_tracking' not in st.session_state:
+    st.session_state.cv_real_tracking = None
 
 if 'ocr_result' not in st.session_state:
     st.session_state.ocr_result = None
@@ -1489,6 +1638,30 @@ def main():
     if 'user_info' not in st.session_state:
         st.session_state.user_info = {"username": "admin", "role": "admin", "coach_group": "Всі"}
 
+    # ---------- RBAC: демо-перемикач ролі користувача ----------
+    with st.sidebar:
+        st.title("🏆 OmniSport Pro")
+        st.caption("Performance Analytics v12.2 — SQLite Edition")
+        st.divider()
+        st.subheader("👤 Роль користувача")
+        role_labels = {"admin": "🛡️ Адмін", "coach": "🧑‍🏫 Тренер", "doctor": "⚕️ Лікар/Медперсонал"}
+        role_keys = list(role_labels.keys())
+        current_role = st.session_state.user_info.get('role', 'admin')
+        selected_role_label = st.selectbox(
+            "Увійти як:",
+            [role_labels[r] for r in role_keys],
+            index=role_keys.index(current_role) if current_role in role_keys else 0,
+            key="role_switcher"
+        )
+        new_role = role_keys[[role_labels[r] for r in role_keys].index(selected_role_label)]
+        if new_role != st.session_state.user_info.get('role'):
+            st.session_state.user_info['role'] = new_role
+            st.rerun()
+        st.caption(
+            "💡 Демо-перемикач ролей (RBAC). У продакшн-версії роль визначається реальною автентифікацією. "
+            "Роль **«Лікар/Медперсонал»** бачить лише медичні дані — без тактичних схем та скаутингу."
+        )
+
     df = load_athletes_with_per()
     user_info = st.session_state.user_info
 
@@ -1497,11 +1670,6 @@ def main():
             df = df[df['coach'] == user_info['coach_group']]
 
     with st.sidebar:
-        st.title("🏆 OmniSport Pro")
-        st.caption("Performance Analytics v12.2 — SQLite Edition")
-
-        st.divider()
-
         st.subheader("🛡️ Безпека даних")
         gdpr_mode = st.toggle("🔒 Анонімний режим (GDPR)", value=False, help="Приховати справжні імена дітей у звітах для захисту персональних даних.")
         if gdpr_mode:
@@ -1561,7 +1729,7 @@ def main():
 
         st.divider()
 
-        menu = [
+        full_menu = [
             "🏠 Дашборд",
             "📊 Командна аналітика",
             "👥 База гравців",
@@ -1576,9 +1744,19 @@ def main():
             "🧬 AI-Тренер (Плани тренувань)",
             "📈 Історія форми",
             "🗃️ Історія матчів (БД)",
+            "📣 Сповіщення (Telegram)",
+            "🧾 Аудит-лог",
             "📚 Ресурси та Освіта",
             "💾 Експорт Даних"
         ]
+
+        if user_info['role'] == 'doctor':
+            # RBAC: лікар/медперсонал бачить ЛИШЕ медичні розділи — жодних тактичних схем чи скаутингу.
+            menu = ["🏥 Медичний кабінет", "🩹 Прогноз Травматизму", "🧾 Аудит-лог"]
+            st.info("⚕️ Роль «Лікар/Медперсонал»: доступ обмежено медичними розділами.")
+        else:
+            menu = full_menu
+
         choice = st.radio("Навігація", menu, key="nav_choice")
         st.divider()
 
@@ -1603,6 +1781,9 @@ def main():
     elif choice == "🧬 AI-Тренер (Плани тренувань)": render_ai_advisor(df)
     elif choice == "📈 Історія форми": render_form_history(df)
     elif choice == "🗃️ Історія матчів (БД)": render_match_history()
+    elif choice == "🏥 Медичний кабінет": render_medical_cabinet(df)
+    elif choice == "📣 Сповіщення (Telegram)": render_notifications(df)
+    elif choice == "🧾 Аудит-лог": render_audit_log()
     elif choice == "📚 Ресурси та Освіта": render_resources()
     elif choice == "💾 Експорт Даних": render_io(df)
 
@@ -2007,6 +2188,19 @@ def render_crm(df):
                 else:
                     st.warning("Токен для цього гравця не знайдено. Будь ласка, перезбережіть профіль.")
 
+                st.divider()
+                st.markdown("**🤖 Telegram-сповіщення для батьків**")
+                st.caption(
+                    "Вкажіть chat_id батьків (дізнатись можна, написавши власному боту через @userinfobot), "
+                    "щоб надсилати їм автоматичні сповіщення з розділу «📣 Сповіщення (Telegram)»."
+                )
+                current_chat_id = token_row.get("Telegram Чат ID") or ""
+                new_chat_id = st.text_input("Telegram chat_id батьків:", value=current_chat_id, key="parent_telegram_chat")
+                if st.button("💾 Зберегти Telegram chat_id", key="save_parent_telegram"):
+                    db_update_telegram_chat_id(parent_player, new_chat_id.strip())
+                    st.success("✅ Chat ID збережено!")
+                    st.rerun()
+
         with st.expander("✏️ Швидке оновлення фізичних показників", expanded=False):
             st.caption("Оновіть швидкість, витривалість або силу після останнього тестування — без повного перезаписування картки гравця.")
             if not df.empty:
@@ -2017,6 +2211,11 @@ def render_crm(df):
                 new_stamina = ec2.number_input("Нова витривалість", 0, 100, int(ep['Витривалість']), key="est")
                 new_power = ec3.number_input("Нова сила", 0, 100, int(ep['Сила']), key="ep")
                 if st.button("💾 Оновити показники", key="update_stats"):
+                    db_log_audit(
+                        edit_player, "Швидкість/Витривалість/Сила",
+                        f"{ep['Швидкість']}/{ep['Витривалість']}/{ep['Сила']}",
+                        f"{new_speed}/{new_stamina}/{new_power}"
+                    )
                     db_update_athlete_stats(edit_player, new_speed, new_stamina, new_power)
                     st.success(f"✅ Показники {edit_player} оновлено!")
                     st.rerun()
@@ -2095,6 +2294,11 @@ def render_crm(df):
             new_dil = c_s3.slider("Старанність", 0, 100, int(sp.get('Старанність', 50)))
 
             if st.button("💾 Оновити Soft Skills", type="primary"):
+                db_log_audit(
+                    soft_player, "Soft Skills (Дисципліна/Команда/Старанність)",
+                    f"{sp.get('Дисципліна', 50)}/{sp.get('Командна робота', 50)}/{sp.get('Старанність', 50)}",
+                    f"{new_disc}/{new_team}/{new_dil}"
+                )
                 db_update_soft_skills(soft_player, new_disc, new_team, new_dil)
                 st.success(f"✅ Показники {soft_player} успішно оновлено!")
                 st.rerun()
@@ -2148,6 +2352,11 @@ def render_crm(df):
                 birthday_str = new_bday.strftime("%m-%d") if new_bday else None
                 medical_str = new_med.strftime("%Y-%m-%d") if new_med else None
                 contract_str = new_contract.strftime("%Y-%m-%d") if new_contract else None
+                db_log_audit(
+                    lc_player, "ДН/Мед.довідка/Контракт",
+                    f"{bday_val}/{med_val}/{contract_val}",
+                    f"{birthday_str}/{medical_str}/{contract_str}"
+                )
                 db_update_athlete_lifecycle(lc_player, birthday_str, medical_str, contract_str)
                 st.success(f"✅ Дати для {lc_player} оновлено!")
                 st.rerun()
@@ -2194,6 +2403,11 @@ def render_crm(df):
                 new_allergies = mc2.text_input("Алергії", value=mp.get("Алергії") or "", placeholder="напр. пеніцилін, пилок, горіхи...")
 
                 if st.form_submit_button("💾 Зберегти медичний профіль", type="primary"):
+                    db_log_audit(
+                        med_player, "Мед.профіль (Група крові/Алергії)",
+                        f"{mp.get('Група крові')}/{mp.get('Алергії')}",
+                        f"{new_blood}/{new_allergies}"
+                    )
                     db_update_medical_profile(med_player, new_blood, new_allergies)
                     st.success(f"✅ Медичний профіль {med_player} оновлено!")
                     st.rerun()
@@ -3097,6 +3311,65 @@ def run_yolo_person_detection(video_path: str, max_frames: int = 5, conf_thresho
     return annotated_preview, detections_summary
 
 
+def run_yolo_player_tracking(video_path: str, max_frames: int = 100, conf_threshold: float = 0.35):
+    """
+    РЕАЛЬНИЙ трекінг гравців на відео за допомогою YOLOv8 + ByteTrack (model.track, persist=True).
+    На відміну від run_yolo_person_detection (детекція окремих кадрів наосліп, без зв'язку між ними),
+    ця функція присвоює кожному гравцю стабільний track_id, що зберігається між кадрами — саме це
+    дозволяє будувати реальні (а не симульовані) траєкторії та теплові карти з відео тренування/матчу.
+
+    Повертає dict:
+        {"tracks": {track_id: [(frame_idx, x_px, y_px), ...], ...},
+         "frame_size": (width, height),
+         "frames_processed": int}
+    або None, якщо OpenCV/Ultralytics недоступні чи відео не вдалося відкрити.
+    """
+    if not (CV2_AVAILABLE and YOLO_AVAILABLE):
+        return None
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        cap.release()
+        return None
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 1280
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 720
+    cap.release()
+
+    model = load_yolo_model()
+    tracks = {}
+    processed = 0
+    frame_idx = 0
+
+    try:
+        results_gen = model.track(
+            source=video_path,
+            conf=conf_threshold,
+            classes=[0],  # клас COCO "person"
+            tracker="bytetrack.yaml",
+            stream=True,
+            verbose=False,
+            persist=True,
+        )
+
+        for result in results_gen:
+            boxes = result.boxes
+            if boxes is not None and boxes.id is not None:
+                ids = boxes.id.int().tolist()
+                xyxy = boxes.xyxy.tolist()
+                for tid, (x1, y1, x2, y2) in zip(ids, xyxy):
+                    cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+                    tracks.setdefault(tid, []).append((frame_idx, cx, cy))
+            processed += 1
+            frame_idx += 1
+            if processed >= max_frames:
+                break
+    except Exception:
+        # Якщо ByteTrack недоступний у цій збірці ultralytics — повертаємо те, що встигли зібрати.
+        pass
+
+    return {"tracks": tracks, "frame_size": (width, height), "frames_processed": processed}
+
+
 def render_heatmap_panel(heatmap, resolution, title):
     """Малює теплову карту поля + зональну статистику + аналіз флангів для переданого масиву heatmap."""
     fig, ax = plt.subplots(figsize=(12, 7))
@@ -3147,6 +3420,77 @@ def render_heatmap_panel(heatmap, resolution, title):
     fl3.metric("🎯 Домінуючий фланг", dominant_flank.upper())
 
 
+def render_real_tracking_results(tracking_result):
+    """Показує результати реального YOLO+ByteTrack трекінгу гравців з відео (не симуляції)."""
+    tracks = tracking_result["tracks"]
+    width, height = tracking_result["frame_size"]
+
+    if not tracks:
+        st.warning("⚠️ Жодного стабільного треку гравця не знайдено на цьому відео/кадрах.")
+        return
+
+    st.success(f"✅ Реальний трекінг: {len(tracks)} унікальних гравців (track ID) на {tracking_result['frames_processed']} проаналізованих кадрах.")
+    st.caption(
+        "На відміну від демо-симуляції в інших вкладках, ці дані отримані напряму з відео за допомогою "
+        "**YOLOv8 + ByteTrack** (`model.track(..., persist=True)`) — кожному гравцю присвоюється стабільний "
+        "ID, що зберігається між кадрами, поки трекер його не втратить (наприклад, через перекриття гравців)."
+    )
+
+    rows = []
+    for tid, pts in tracks.items():
+        if len(pts) < 2:
+            continue
+        dist_px = 0.0
+        for i in range(1, len(pts)):
+            f0, x0, y0 = pts[i - 1]
+            f1, x1, y1 = pts[i]
+            if f1 - f0 <= 3:  # рахуємо лише суміжні кадри, щоб уникнути хибних стрибків при втраті треку
+                dist_px += np.sqrt((x1 - x0) ** 2 + (y1 - y0) ** 2)
+        rows.append({
+            "Track ID": int(tid),
+            "Кадрів у треку": len(pts),
+            "Пройдена дистанція (px)": round(dist_px, 1),
+        })
+
+    if rows:
+        tracks_df = pd.DataFrame(rows).sort_values("Пройдена дистанція (px)", ascending=False)
+        st.dataframe(tracks_df, use_container_width=True, hide_index=True)
+    else:
+        tracks_df = pd.DataFrame()
+        st.info("Треки занадто короткі, щоб порахувати дистанцію.")
+
+    st.divider()
+    st.subheader("🔥 Теплова карта реальних позицій (з відео)")
+    all_points = []
+    for pts in tracks.values():
+        for (_, x, y) in pts:
+            all_points.append((x / width * 105, (1 - y / height) * 68))
+
+    if all_points:
+        resolution = 40
+        heatmap = np.zeros((resolution, resolution))
+        for (x, y) in all_points:
+            px = int(np.clip((x / 105) * resolution, 0, resolution - 1))
+            py = int(np.clip((y / 68) * resolution, 0, resolution - 1))
+            heatmap[py, px] += 1
+        if heatmap.max() > 0:
+            heatmap = heatmap / heatmap.max()
+        render_heatmap_panel(heatmap, resolution, "Реальна теплова карта (YOLO-трекінг з відео)")
+        st.caption(
+            "⚠️ Координати переведені з пікселів кадру на умовні розміри поля (105×68 м) без каліброваної "
+            "гомографії камери — це орієнтовна, а не метрично точна прив'язка до реального поля."
+        )
+
+    st.divider()
+    if not tracks_df.empty:
+        st.download_button(
+            "📥 Завантажити треки CSV",
+            tracks_df.to_csv(index=False).encode('utf-8'),
+            "yolo_real_tracking.csv", mime="text/csv", use_container_width=True,
+            key="real_tracking_csv_export"
+        )
+
+
 def render_cv_analysis():
     st.title("🎥 Computer Vision: Автоматичний аналіз відео")
     st.markdown("""
@@ -3154,7 +3498,8 @@ def render_cv_analysis():
     будує теплові карти активності (як командні, так і для окремого гравця), розраховує
     фізичні показники (дистанція, швидкість) та фіксує ключові ігрові події.
     У демо-режимі дані симулюються без реального відео; за наявності бібліотек
-    OpenCV + Ultralytics YOLO доступна реальна детекція людей на завантаженому відео.
+    OpenCV + Ultralytics YOLO доступна реальна детекція окремих кадрів, а також
+    **реальний трекінг гравців (YOLOv8 + ByteTrack)** через усе відео.
     """)
 
     tab_input, tab_tracking, tab_heatmap, tab_physics, tab_events = st.tabs([
@@ -3172,7 +3517,7 @@ def render_cv_analysis():
             uploaded_video = st.file_uploader("Завантажте відеозапис:", type=["mp4", "avi", "mov"], key="cv_video_upload")
 
             if CV2_AVAILABLE and YOLO_AVAILABLE:
-                st.success("✅ OpenCV та Ultralytics YOLO доступні — можна запустити реальну детекцію людей на відео.")
+                st.success("✅ OpenCV та Ultralytics YOLO доступні — можна запустити реальну детекцію та реальний трекінг гравців на відео.")
             else:
                 missing = []
                 if not CV2_AVAILABLE:
@@ -3180,7 +3525,7 @@ def render_cv_analysis():
                 if not YOLO_AVAILABLE:
                     missing.append("ultralytics")
                 st.warning(
-                    f"⚠️ Для реальної детекції об'єктів (YOLO) не вистачає бібліотек: `{'`, `'.join(missing)}`. "
+                    f"⚠️ Для реальної детекції/трекінгу об'єктів (YOLO) не вистачає бібліотек: `{'`, `'.join(missing)}`. "
                     f"Додайте їх у requirements.txt (`pip install {' '.join(missing)}`), щоб увімкнути цю функцію. "
                     "Модель YOLOv8n (~6 МБ) автоматично завантажиться при першому запуску. "
                     "Поки що доступна демо-симуляція нижче."
@@ -3188,7 +3533,7 @@ def render_cv_analysis():
 
             yc1, yc2 = st.columns(2)
             conf_threshold = yc1.slider("Поріг впевненості детекції", 0.1, 0.9, 0.35, 0.05, key="yolo_conf")
-            max_sample_frames = yc2.slider("Кількість кадрів для аналізу", 1, 15, 5, key="yolo_max_frames")
+            max_sample_frames = yc2.slider("Кількість кадрів для аналізу (детекція)", 1, 15, 5, key="yolo_max_frames")
 
             if st.button("🎯 Запустити детекцію об'єктів (YOLO)", type="primary", use_container_width=True):
                 if uploaded_video is None:
@@ -3223,9 +3568,51 @@ def render_cv_analysis():
                             st.info("На проаналізованих кадрах людей не виявлено (або кадри не вдалося зчитати).")
                         st.caption(
                             "ℹ️ Це реальні bounding boxes, знайдені YOLOv8 на відео, а не симуляція. "
-                            "Перетворення піксельних координат кадру в координати поля (гомографія камери) "
-                            "поки не реалізоване — для тактичної теплокарти скористайтесь демо-симуляцією нижче."
+                            "Кожен кадр аналізується незалежно — для трекінгу одного й того ж гравця "
+                            "між кадрами скористайтесь блоком «Реальний трекінг гравців» нижче."
                         )
+
+            st.divider()
+            st.markdown("**🎯 Реальний трекінг гравців (YOLOv8 + ByteTrack)**")
+            st.caption(
+                "На відміну від детекції окремих кадрів вище, цей режим відстежує кожного гравця через "
+                "усю відеопослідовність, присвоюючи стабільний track ID (`model.track(persist=True)`). "
+                "Це основа для реальних (не симульованих) теплових карт і траєкторій."
+            )
+            track_max_frames = st.slider("Макс. кадрів для трекінгу", 30, 300, 100, key="yolo_track_max_frames")
+
+            if st.button("🎯 Запустити реальний трекінг гравців", type="primary", use_container_width=True, key="yolo_real_tracking_btn"):
+                if uploaded_video is None:
+                    st.error("⚠️ Спочатку завантажте відеофайл вище.")
+                elif not (CV2_AVAILABLE and YOLO_AVAILABLE):
+                    st.error("⚠️ Потрібні бібліотеки OpenCV та Ultralytics YOLO (див. попередження вище).")
+                else:
+                    with st.spinner("Трекуємо гравців по всьому відео (YOLOv8 + ByteTrack)... це може зайняти деякий час."):
+                        suffix = "." + uploaded_video.name.split(".")[-1]
+                        tmp_fd, tmp_path = tempfile.mkstemp(suffix=suffix)
+                        os.close(tmp_fd)
+                        with open(tmp_path, "wb") as f:
+                            f.write(uploaded_video.getbuffer())
+                        try:
+                            tracking_result = run_yolo_player_tracking(
+                                tmp_path, max_frames=track_max_frames, conf_threshold=conf_threshold
+                            )
+                        except Exception as e:
+                            tracking_result = None
+                            st.error(f"Помилка під час трекінгу: {e}")
+                        finally:
+                            if os.path.exists(tmp_path):
+                                os.remove(tmp_path)
+
+                    if tracking_result and tracking_result["tracks"]:
+                        st.session_state.cv_real_tracking = tracking_result
+                        st.success("✅ Трекінг завершено! Результати показано нижче.")
+                    elif tracking_result is not None:
+                        st.warning("Гравців на відео не знайдено, або треки виявилися занадто короткими.")
+
+            if st.session_state.get("cv_real_tracking"):
+                st.divider()
+                render_real_tracking_results(st.session_state.cv_real_tracking)
         else:
             col_cfg1, col_cfg2, col_cfg3 = st.columns(3)
             demo_players = col_cfg1.slider("Гравців у команді:", 3, 8, 5)
@@ -4553,6 +4940,7 @@ def render_injury_prediction(df):
         workload = st.number_input("Матчів/тренувань:", min_value=0, max_value=7,
                                    value=int(player_data.get('Навантаження_7днів', 0)))
         if st.button("💾 Зберегти навантаження"):
+            db_log_audit(selected_player, "Навантаження_7днів", player_data.get('Навантаження_7днів', 0), workload)
             db_update_athlete_workload(selected_player, workload)
             st.success(f"✅ Навантаження {selected_player} оновлено в БД!")
             st.rerun()
@@ -4616,17 +5004,7 @@ def render_injury_prediction(df):
     st.divider()
     st.subheader("👥 Огляд ризиків всієї команди")
     st.caption("Розраховані ризики для всіх гравців одночасно — для швидкого виявлення тих, хто потребує уваги.")
-    team_risks = []
-    for _, row in df.iterrows():
-        imb = abs(row['Сила'] - row['Витривалість'])
-        br = int((imb*1.5) + (row['Швидкість']*0.5))
-        wf = 45 if row.get('Навантаження_7днів', 0) >= 3 else (20 if row.get('Навантаження_7днів', 0) == 2 else 0)
-        sp = 20 if row['Витривалість'] < 55 else 0
-        risk = min(br + wf + sp, 100)
-        status = "🟢 Норма" if risk < 40 else ("🟡 Ризик" if risk < 75 else "🔴 Критично")
-        team_risks.append({"Гравець": row["Ім'я"], "Вид спорту": row["Вид спорту"],
-                           "Ризик (%)": risk, "Статус": status})
-    risk_df = pd.DataFrame(team_risks).sort_values("Ризик (%)", ascending=False)
+    risk_df = compute_team_injury_risks(df)
     st.dataframe(risk_df.style.background_gradient(cmap='RdYlGn_r', subset=['Ризик (%)']),
                  use_container_width=True, hide_index=True)
 
@@ -4818,6 +5196,259 @@ def render_form_history(df):
 
 
 # ==========================================
+# 10.5 МЕДИЧНИЙ КАБІНЕТ (для ролі «Лікар/Медперсонал»)
+# ==========================================
+def render_medical_cabinet(df):
+    st.title("🏥 Медичний кабінет")
+    st.markdown("""
+    Цей розділ доступний ролі **«⚕️ Лікар/Медперсонал»**: медичні профілі, історія травм
+    та мед.довідки гравців. Відповідно до принципу розмежування доступу (RBAC),
+    тактичні схеми, скаутинг, симулятор матчів та інша неспецифічна аналітика
+    для цієї ролі приховані в меню.
+    """)
+
+    if df.empty:
+        st.info("Немає гравців у базі.")
+        return
+
+    med_player = st.selectbox("Спортсмен:", df["Ім'я"], key="doctor_medical_select")
+    mp = df[df["Ім'я"] == med_player].iloc[0]
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("🩸 Група крові", mp.get("Група крові") or "Не вказано")
+    c2.metric("🩺 Мед.довідка до", mp.get("Мед.довідка до") or "—")
+    days_to_expiry = get_days_to_expiry(mp.get("Мед.довідка до"))
+    if days_to_expiry is not None and days_to_expiry < 0:
+        c3.error(f"❌ Прострочено на {abs(days_to_expiry)} дн.")
+    elif days_to_expiry is not None and days_to_expiry <= 30:
+        c3.warning(f"⚠️ Спливає через {days_to_expiry} дн.")
+    else:
+        c3.success("✅ Дійсна")
+
+    if mp.get("Алергії"):
+        st.warning(f"⚠️ **Алергії:** {mp.get('Алергії')}")
+
+    st.divider()
+    with st.form("doctor_medical_profile_form"):
+        st.subheader("✏️ Оновити медичний профіль")
+        mc1, mc2 = st.columns(2)
+        blood_options = ["Не вказано", "O(I)+", "O(I)-", "A(II)+", "A(II)-", "B(III)+", "B(III)-", "AB(IV)+", "AB(IV)-"]
+        current_blood = mp.get("Група крові") if mp.get("Група крові") in blood_options else "Не вказано"
+        new_blood = mc1.selectbox("Група крові", blood_options, index=blood_options.index(current_blood))
+        new_allergies = mc2.text_input("Алергії", value=mp.get("Алергії") or "")
+        if st.form_submit_button("💾 Зберегти", type="primary"):
+            db_log_audit(
+                med_player, "Мед.профіль (Група крові/Алергії)",
+                f"{mp.get('Група крові')}/{mp.get('Алергії')}", f"{new_blood}/{new_allergies}"
+            )
+            db_update_medical_profile(med_player, new_blood, new_allergies)
+            st.success("✅ Оновлено!")
+            st.rerun()
+
+    st.divider()
+    st.subheader("🩹 Історія травм")
+    with st.form("doctor_add_injury_form"):
+        ic1, ic2, ic3 = st.columns(3)
+        injury_type = ic1.text_input("Тип травми")
+        injury_date = ic2.date_input("Дата травми", value=datetime.today())
+        recovery_days = ic3.number_input("Днів на відновлення", min_value=0, max_value=365, value=7)
+        injury_notes = st.text_area("Опис / коментар лікаря")
+        if st.form_submit_button("➕ Додати запис", type="primary"):
+            if injury_type.strip():
+                db_save_injury(med_player, injury_type, injury_date.strftime("%Y-%m-%d"), int(recovery_days), injury_notes)
+                st.success("✅ Додано!")
+                st.rerun()
+            else:
+                st.error("⚠️ Вкажіть тип травми.")
+
+    injuries = db_load_injuries(med_player)
+    if injuries:
+        for inj in injuries:
+            ci1, ci2 = st.columns([5, 1])
+            with ci1:
+                st.warning(f"🩹 **{inj['injury_type']}** — {inj['injury_date']} (відновлення: {inj['recovery_days']} дн.)")
+                if inj['notes']:
+                    st.caption(inj['notes'])
+            with ci2:
+                if st.button("🗑️", key=f"doctor_del_injury_{inj['id']}"):
+                    db_delete_injury(inj['id'])
+                    st.rerun()
+    else:
+        st.info("Записів про травми немає.")
+
+    st.divider()
+    st.subheader("📋 Мед.огляд усіх гравців групи")
+    overview_rows = []
+    for _, row in df.iterrows():
+        d_med = get_days_to_expiry(row.get("Мед.довідка до"))
+        overview_rows.append({
+            "Ім'я": row["Ім'я"], "Група крові": row.get("Група крові") or "—",
+            "Алергії": row.get("Алергії") or "—",
+            "Днів до закінчення довідки": d_med if d_med is not None else "—"
+        })
+    st.dataframe(pd.DataFrame(overview_rows), use_container_width=True, hide_index=True)
+
+    st.divider()
+    render_export_import_block(
+        section_key="medical_cabinet",
+        export_data={"Мед.огляд групи": pd.DataFrame(overview_rows)},
+        import_config=None,
+        note="Медичні дані є конфіденційними, тому доступний лише експорт із цього розділу."
+    )
+
+
+# ==========================================
+# 10.6 СПОВІЩЕННЯ (TELEGRAM-БОТ)
+# ==========================================
+def render_notifications(df):
+    st.title("📣 Сповіщення (Telegram-бот)")
+    st.markdown("""
+    Автоматичні сповіщення тренеру та батькам через Telegram. Тренер може отримати зведення
+    по ризикам травматизму одним натисканням кнопки, а батьки — індивідуальні повідомлення
+    (наприклад, про перенесення тренування). Для роботи достатньо один раз створити бота
+    через **@BotFather** і вказати його токен нижче.
+    """)
+
+    st.subheader("⚙️ Налаштування бота")
+    with st.form("bot_settings_form"):
+        current_token = get_setting("telegram_bot_token", "")
+        current_coach_chat = get_setting("telegram_coach_chat_id", "")
+        bc1, bc2 = st.columns(2)
+        bot_token_input = bc1.text_input("Токен бота (@BotFather)", value=current_token, type="password")
+        coach_chat_input = bc2.text_input(
+            "Chat ID тренера", value=current_coach_chat,
+            help="Дізнатись свій chat_id можна, написавши боту @userinfobot у Telegram."
+        )
+        if st.form_submit_button("💾 Зберегти налаштування", type="primary"):
+            set_setting("telegram_bot_token", bot_token_input.strip())
+            set_setting("telegram_coach_chat_id", coach_chat_input.strip())
+            st.success("✅ Налаштування бота збережено!")
+            st.rerun()
+
+    if not get_setting("telegram_bot_token"):
+        st.warning("⚠️ Токен бота ще не вказано — сповіщення надсилатись не будуть, поки ви його не додасте вище.")
+
+    st.divider()
+    tab_coach, tab_parents, tab_log = st.tabs(["🧑‍🏫 Сповіщення тренеру", "👨‍👩‍👧 Сповіщення батькам", "📜 Журнал сповіщень"])
+
+    with tab_coach:
+        st.subheader("🩹 Зведення по ризику травматизму")
+        st.caption("Автоматично формує повідомлення зі списком гравців з підвищеним або критичним ризиком травми і надсилає його тренеру в Telegram.")
+        risk_df = compute_team_injury_risks(df)
+        at_risk = risk_df[risk_df["Ризик (%)"] >= 40] if not risk_df.empty else risk_df
+
+        if at_risk.empty:
+            st.success("✅ Наразі жодного гравця з підвищеним ризиком — сповіщати нема про що.")
+        else:
+            st.warning(f"⚠️ Знайдено {len(at_risk)} гравців із підвищеним/критичним ризиком:")
+            st.dataframe(at_risk, use_container_width=True, hide_index=True)
+
+            preview_lines = [f"⚠️ Сьогодні {len(at_risk)} гравців мають підвищений ризик травми:"]
+            for _, r in at_risk.iterrows():
+                preview_lines.append(f"• {r['Гравець']} — {r['Ризик (%)']}% ({r['Статус']})")
+            preview_text = "\n".join(preview_lines)
+            message_text = st.text_area("Текст повідомлення (можна відредагувати):", value=preview_text, height=150)
+
+            if st.button("📤 Надіслати тренеру в Telegram", type="primary", use_container_width=True):
+                coach_chat = get_setting("telegram_coach_chat_id", "")
+                success, info = send_telegram_message(coach_chat, message_text)
+                db_save_notification("Тренер", coach_chat, message_text, "✅ Успішно" if success else f"❌ {info}")
+                if success:
+                    st.success(f"✅ {info}")
+                else:
+                    st.error(info)
+
+    with tab_parents:
+        st.subheader("👨‍👩‍👧 Індивідуальне повідомлення батькам")
+        st.caption("Наприклад: «Тренування перенесено на 19:00» або «Ваша дитина отримала легку травму, деталі — у кабінеті батьків».")
+
+        if df.empty:
+            st.info("Немає гравців у базі.")
+        else:
+            recipient_mode = st.radio("Кому надіслати:", ["Одному гравцю", "Усій групі"], horizontal=True)
+            default_msg = "Шановні батьки! Тренування сьогодні переноситься на 19:00. Дякуємо за розуміння."
+            parent_message = st.text_area("Текст повідомлення:", value=default_msg, height=100)
+
+            if recipient_mode == "Одному гравцю":
+                target_player = st.selectbox("Гравець:", df["Ім'я"], key="notif_target_player")
+                target_row = df[df["Ім'я"] == target_player].iloc[0]
+                chat_id = target_row.get("Telegram Чат ID") or ""
+                if not chat_id:
+                    st.warning(
+                        f"⚠️ Для {target_player} ще не вказано Telegram chat_id "
+                        f"(розділ «👥 База гравців» → «📇 Список гравців» → «🔗 Доступ для батьків»)."
+                    )
+                if st.button("📤 Надіслати повідомлення", type="primary", use_container_width=True, key="send_single_parent"):
+                    success, info = send_telegram_message(chat_id, parent_message)
+                    db_save_notification(target_player, chat_id, parent_message, "✅ Успішно" if success else f"❌ {info}")
+                    if success:
+                        st.success(f"✅ {info}")
+                    else:
+                        st.error(info)
+            else:
+                eligible = df[df["Telegram Чат ID"].notna() & (df["Telegram Чат ID"] != "")] if "Telegram Чат ID" in df.columns else pd.DataFrame()
+                st.caption(f"Гравців із налаштованим Telegram chat_id: **{len(eligible)}** з {len(df)}.")
+                if st.button("📤 Надіслати всім батькам групи", type="primary", use_container_width=True, key="send_bulk_parents"):
+                    if eligible.empty:
+                        st.warning("Жоден гравець у групі ще не має налаштованого Telegram chat_id.")
+                    else:
+                        sent, failed = 0, 0
+                        for _, r in eligible.iterrows():
+                            success, info = send_telegram_message(r["Telegram Чат ID"], parent_message)
+                            db_save_notification(r["Ім'я"], r["Telegram Чат ID"], parent_message, "✅ Успішно" if success else f"❌ {info}")
+                            sent += int(success)
+                            failed += int(not success)
+                        st.success(f"✅ Надіслано: {sent} | ❌ Помилок: {failed}")
+
+    with tab_log:
+        st.subheader("📜 Журнал надісланих сповіщень")
+        log_rows = db_load_notifications(100)
+        if log_rows:
+            st.dataframe(pd.DataFrame(log_rows), use_container_width=True, hide_index=True)
+        else:
+            st.info("Сповіщень ще не надсилалося.")
+
+
+# ==========================================
+# 10.7 АУДИТ-ЛОГ
+# ==========================================
+def render_audit_log():
+    st.title("🧾 Аудит-лог змін")
+    st.markdown("""
+    Повна історія редагувань показників гравців: **хто**, **коли** і **що саме** змінив.
+    Використовується для контролю якості даних і розслідування суперечливих правок —
+    наприклад, якщо два тренери одночасно редагують одного й того ж гравця.
+    """)
+
+    entries = db_load_audit_log(limit=500)
+    if not entries:
+        st.info("Записів аудиту ще немає — вони з'являться після першого редагування показників гравця.")
+        return
+
+    log_df = pd.DataFrame(entries)[["ts", "username", "role", "athlete", "field", "old_value", "new_value"]]
+    log_df.columns = ["Час", "Користувач", "Роль", "Гравець", "Поле", "Було", "Стало"]
+
+    col_f1, col_f2 = st.columns(2)
+    athlete_filter = col_f1.selectbox("Фільтр за гравцем:", ["Всі"] + sorted(log_df["Гравець"].dropna().unique().tolist()))
+    user_filter = col_f2.selectbox("Фільтр за користувачем:", ["Всі"] + sorted(log_df["Користувач"].dropna().unique().tolist()))
+
+    filtered = log_df.copy()
+    if athlete_filter != "Всі":
+        filtered = filtered[filtered["Гравець"] == athlete_filter]
+    if user_filter != "Всі":
+        filtered = filtered[filtered["Користувач"] == user_filter]
+
+    st.caption(f"Показано {len(filtered)} з {len(log_df)} записів (найновіші зверху).")
+    st.dataframe(filtered, use_container_width=True, hide_index=True, height=500)
+
+    st.divider()
+    st.download_button(
+        "📥 Експортувати аудит-лог CSV", filtered.to_csv(index=False).encode('utf-8'),
+        "audit_log.csv", mime="text/csv", use_container_width=True
+    )
+
+
+# ==========================================
 # 11. РЕСУРСИ
 # ==========================================
 def render_resources():
@@ -4854,6 +5485,8 @@ def render_resources():
         "Теплова карта CV": "Візуалізація зон активності на полі, отримана методами комп'ютерного зору з відеозапису матчу.",
         "OCR маркерів": "Оптичне розпізнавання кольорових фішок і номерів гравців на тактичній дошці.",
         "Впевненість OCR (%)": "Показник якості розпізнавання конкретного маркера або стрілки. Значення > 80% — надійне розпізнавання.",
+        "Track ID (YOLO трекінг)": "Стабільний ідентифікатор гравця, який алгоритм ByteTrack зберігає для нього між кадрами відео.",
+        "Аудит-лог": "Журнал усіх змін показників гравців із зазначенням користувача, ролі, часу та значень до/після.",
     }
     for term, definition in glossary.items():
         with st.expander(f"📌 {term}"):
@@ -4898,6 +5531,8 @@ def render_io(df):
     notes_df = pd.read_sql_query("SELECT * FROM video_notes ORDER BY created_at DESC", conn)
     tactic_df = pd.read_sql_query("SELECT * FROM tactic_notes ORDER BY created_at DESC", conn)
     athlete_notes_df = pd.read_sql_query("SELECT * FROM athlete_notes ORDER BY created_at DESC", conn)
+    audit_df = pd.read_sql_query("SELECT * FROM audit_log ORDER BY ts DESC", conn)
+    notif_df = pd.read_sql_query("SELECT * FROM notification_log ORDER BY created_at DESC", conn)
     conn.close()
 
     col_a, col_b, col_c, col_d = st.columns(4)
@@ -4921,6 +5556,18 @@ def render_io(df):
         if not athlete_notes_df.empty:
             st.download_button("📥 Нотатки гравців CSV", athlete_notes_df.to_csv(index=False).encode('utf-8'),
                                "athlete_notes.csv", mime="text/csv", use_container_width=True)
+
+    col_e, col_f = st.columns(2)
+    with col_e:
+        st.metric("🧾 Записів аудит-логу", len(audit_df))
+        if not audit_df.empty:
+            st.download_button("📥 Аудит-лог CSV", audit_df.to_csv(index=False).encode('utf-8'),
+                               "audit_log.csv", mime="text/csv", use_container_width=True)
+    with col_f:
+        st.metric("📣 Надісланих сповіщень", len(notif_df))
+        if not notif_df.empty:
+            st.download_button("📥 Журнал сповіщень CSV", notif_df.to_csv(index=False).encode('utf-8'),
+                               "notification_log.csv", mime="text/csv", use_container_width=True)
 
     st.divider()
     st.subheader("📋 Шаблон для заповнення")
